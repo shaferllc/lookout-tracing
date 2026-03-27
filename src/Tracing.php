@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing;
 
-use Sentry\continueTrace;
-use Sentry\trace;
 
 /**
  * Convenience entry points (similar to {@see continueTrace()} / {@see trace()}).
