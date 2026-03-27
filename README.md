@@ -276,7 +276,7 @@ CLI / queue: enable **`LOOKOUT_PERFORMANCE_FLUSH_CLI_QUEUE=true`** to flush afte
 
 ### Rails
 
-For Ruby on Rails, use the copy-paste module under **`integrations/rails/`** in the Lookout repository (`lookout_framework.rb` + README): `ActiveSupport::Notifications` for controller and Active Job, optional SQL sampling, and `LookoutFramework.report_exception` from your error pipeline.
+For Ruby on Rails, use the copy-paste module under **`packages/lookout-rails/`** in the Lookout repository (`lib/lookout_framework.rb` + README), or a git subtree mirror if you use `SPLIT_LOOKOUT_RAILS_REPO`: `ActiveSupport::Notifications` for controller and Active Job, optional SQL sampling, and `LookoutFramework.report_exception` from your error pipeline.
 
 ## Guzzle 7
 
