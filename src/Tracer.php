@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing;
 
+use Lookout\Tracing\Performance\CompositeOrSampler;
 use Lookout\Tracing\Performance\RateSampler;
 use Lookout\Tracing\Performance\Sampler;
 use Lookout\Tracing\Performance\TraceLimiter;
@@ -74,6 +75,20 @@ final class Tracer
     /** @var list<int> */
     private array $traceIngestRetryStatuses = [429];
 
+    /**
+     * When a job runs synchronously inside a request (or nested under another job), {@see continueTrace()}
+     * clears the span stack; we stash the parent stack and trace fields here and restore after {@see finishAutoQueueTransaction()}.
+     *
+     * @var list<array{span_stack: list<Span>, trace: array<string, mixed>}>
+     */
+    private array $queueWorkerSuspendStack = [];
+
+    /** When true, tail sampling must not drop this trace at flush (e.g. error report sent for same request). */
+    private bool $traceTailExportForced = false;
+
+    /** Upstream {@code sentry-trace} had explicit {@code sampled=1}. */
+    private bool $upstreamSentrySampledTrue = false;
+
     public static function instance(): self
     {
         return self::$instance ??= new self;
@@ -96,6 +111,8 @@ final class Tracer
      *     ingest_trace_path?: string|null,
      *     environment?: string|null,
      *     release?: string|null,
+     *     commit_sha?: string|null,
+     *     deployed_at?: float|int|string|null,
      *     performance_enabled?: bool,
      *     http_client_spans?: bool,
      *     trace_limits?: array<string, mixed>|null,
@@ -103,6 +120,7 @@ final class Tracer
      *     trace_ingest_max_attempts?: int,
      *     trace_ingest_retry_delay_ms?: int,
      *     trace_ingest_retry_statuses?: list<int>,
+     *     tail_sampling?: array<string, mixed>,
      * }  $config
      */
     public function configure(array $config): self
@@ -179,6 +197,16 @@ final class Tracer
         return $this->spanRecordingEnabled;
     }
 
+    /**
+     * Ensures the current performance trace batch is exported on flush even if tail sampling would drop it.
+     * Called when an error is reported to Lookout so traces align with issues.
+     */
+    public function markTraceMustExport(string $reason = 'manual'): void
+    {
+        unset($reason);
+        $this->traceTailExportForced = true;
+    }
+
     public function traceLimiter(): TraceLimiter
     {
         return $this->traceLimiter;
@@ -217,6 +245,8 @@ final class Tracer
         $this->autoManagedHttpSpanId = null;
         $this->autoManagedConsoleSpanId = null;
         $this->autoManagedQueueSpanId = null;
+        $this->traceTailExportForced = false;
+        $this->upstreamSentrySampledTrue = false;
 
         $parsed = SentryTraceHeader::parse($sentryTraceHeader);
         $incomingBaggage = Baggage::parse($baggageHeader);
@@ -231,6 +261,7 @@ final class Tracer
             } elseif ($sampled === true) {
                 $this->defaultSampled = true;
                 $this->spanRecordingEnabled = true;
+                $this->upstreamSentrySampledTrue = true;
             } else {
                 $this->applyRootSamplerForNewTraceDecision();
             }
@@ -247,8 +278,119 @@ final class Tracer
         return $this;
     }
 
+    /**
+     * Stash the open span stack (e.g. {@code http.server}) before {@see continueTrace()} for a queue worker
+     * so sync drivers do not orphan the parent transaction. No-op when the stack is already empty (async worker).
+     */
+    public function suspendBeforeQueueJobDispatch(): void
+    {
+        if ($this->getCurrentSpan() === null) {
+            return;
+        }
+        $this->queueWorkerSuspendStack[] = [
+            'span_stack' => $this->spanStack,
+            'trace' => $this->snapshotTraceContextForQueueSuspend(),
+        ];
+        $this->spanStack = [];
+    }
+
+    /**
+     * Pops one level of suspend stack after the job attempt (mirrors {@see suspendBeforeQueueJobDispatch()}).
+     */
+    public function restoreAfterQueueJobAttempt(): void
+    {
+        if ($this->queueWorkerSuspendStack === []) {
+            return;
+        }
+        $frame = array_pop($this->queueWorkerSuspendStack);
+        $this->applyTraceContextSnapshot($frame['trace']);
+        $this->spanStack = $frame['span_stack'];
+    }
+
+    /**
+     * @return array{
+     *     trace_id: string,
+     *     remote_parent_span_id: ?string,
+     *     baggage_entries: array<string, string>,
+     *     default_sampled: ?bool,
+     *     span_recording_enabled: bool,
+     *     default_outgoing_span_id: ?string,
+     *     root_transaction_name: ?string,
+     *     auto_managed_http_span_id: ?string,
+     *     auto_managed_console_span_id: ?string,
+     *     auto_managed_queue_span_id: ?string,
+     *     trace_tail_export_forced: bool,
+     *     upstream_sentry_sampled_true: bool,
+     * }
+     */
+    private function snapshotTraceContextForQueueSuspend(): array
+    {
+        return [
+            'trace_id' => $this->traceId,
+            'remote_parent_span_id' => $this->remoteParentSpanId,
+            'baggage_entries' => $this->baggageEntries,
+            'default_sampled' => $this->defaultSampled,
+            'span_recording_enabled' => $this->spanRecordingEnabled,
+            'default_outgoing_span_id' => $this->defaultOutgoingSpanId,
+            'root_transaction_name' => $this->rootTransactionName,
+            'auto_managed_http_span_id' => $this->autoManagedHttpSpanId,
+            'auto_managed_console_span_id' => $this->autoManagedConsoleSpanId,
+            'auto_managed_queue_span_id' => $this->autoManagedQueueSpanId,
+            'trace_tail_export_forced' => $this->traceTailExportForced,
+            'upstream_sentry_sampled_true' => $this->upstreamSentrySampledTrue,
+        ];
+    }
+
+    /**
+     * @param  array{
+     *     trace_id: string,
+     *     remote_parent_span_id: ?string,
+     *     baggage_entries: array<string, string>,
+     *     default_sampled: ?bool,
+     *     span_recording_enabled: bool,
+     *     default_outgoing_span_id: ?string,
+     *     root_transaction_name: ?string,
+     *     auto_managed_http_span_id: ?string,
+     *     auto_managed_console_span_id: ?string,
+     *     auto_managed_queue_span_id: ?string,
+     *     trace_tail_export_forced: bool,
+     *     upstream_sentry_sampled_true: bool,
+     * }  $t
+     */
+    private function applyTraceContextSnapshot(array $t): void
+    {
+        $this->traceId = $t['trace_id'];
+        $this->remoteParentSpanId = $t['remote_parent_span_id'];
+        $this->baggageEntries = $t['baggage_entries'];
+        $this->defaultSampled = $t['default_sampled'];
+        $this->spanRecordingEnabled = $t['span_recording_enabled'];
+        $this->defaultOutgoingSpanId = $t['default_outgoing_span_id'];
+        $this->rootTransactionName = $t['root_transaction_name'];
+        $this->autoManagedHttpSpanId = $t['auto_managed_http_span_id'];
+        $this->autoManagedConsoleSpanId = $t['auto_managed_console_span_id'];
+        $this->autoManagedQueueSpanId = $t['auto_managed_queue_span_id'];
+        $this->traceTailExportForced = $t['trace_tail_export_forced'];
+        $this->upstreamSentrySampledTrue = $t['upstream_sentry_sampled_true'];
+    }
+
     private function applyRootSamplerForNewTraceDecision(): void
     {
+        $tail = $this->tailSamplingConfig();
+        if ($tail !== null && filter_var($tail['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            $this->spanRecordingEnabled = true;
+            if ($this->performanceEnabled && $this->sampler !== null) {
+                $head = $this->sampler->shouldSample([
+                    'trace_id' => $this->traceId,
+                    'kind' => 'root',
+                ]);
+                $this->defaultSampled = $head;
+            } else {
+                $this->defaultSampled = true;
+            }
+
+            return;
+        }
+
         if ($this->performanceEnabled && $this->sampler !== null) {
             $decision = $this->sampler->shouldSample([
                 'trace_id' => $this->traceId,
@@ -262,6 +404,152 @@ final class Tracer
 
         $this->spanRecordingEnabled = true;
         $this->defaultSampled = true;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function tailSamplingConfig(): ?array
+    {
+        $ts = $this->config['tail_sampling'] ?? null;
+
+        return is_array($ts) ? $ts : null;
+    }
+
+    /**
+     * When tail sampling is enabled, drop the finished batch unless it looks “interesting” or was forced.
+     */
+    private function applyTailSamplingDropIfApplicable(): void
+    {
+        $ts = $this->tailSamplingConfig();
+        if ($ts === null || ! filter_var($ts['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            return;
+        }
+        if ($this->traceTailExportForced) {
+            return;
+        }
+        if ($this->upstreamSentrySampledTrue) {
+            return;
+        }
+        if ($this->remoteParentSpanId !== null && filter_var($ts['keep_distributed_participation'] ?? true, FILTER_VALIDATE_BOOLEAN)) {
+            return;
+        }
+        if ($this->finishedRecords === []) {
+            return;
+        }
+
+        if ($this->tailPolicyKeepsTrace($ts)) {
+            return;
+        }
+
+        $this->clearFinishedSpans();
+    }
+
+    /**
+     * @param  array<string, mixed>  $ts
+     */
+    private function tailPolicyKeepsTrace(array $ts): bool
+    {
+        $root = $this->primaryRootFinishedRecord();
+        if ($root === null) {
+            return false;
+        }
+
+        $durationMs = $this->finishedRecordDurationMs($root);
+        $slowMs = (int) ($ts['slow_transaction_ms'] ?? 2000);
+        if (filter_var($ts['always_export_slow'] ?? true, FILTER_VALIDATE_BOOLEAN)
+            && $durationMs !== null && $durationMs >= max(0, $slowMs)) {
+            return true;
+        }
+
+        $errFrom = (int) ($ts['http_error_status_from'] ?? 500);
+        if ($errFrom > 0 && $errFrom <= 599) {
+            $code = $this->httpStatusFromRecord($root);
+            if ($code !== null && $code >= $errFrom) {
+                return true;
+            }
+        }
+
+        if (filter_var($ts['export_on_span_internal_error'] ?? true, FILTER_VALIDATE_BOOLEAN)
+            && $this->finishedRecordsContainInternalError()) {
+            return true;
+        }
+
+        $residual = (float) ($ts['residual_rate'] ?? 0.0);
+        if ($residual > 0.0 && $residual < 1.0 && (mt_rand() / mt_getrandmax()) < $residual) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function finishedRecordDurationMs(array $row): ?int
+    {
+        $start = $row['start_timestamp'] ?? null;
+        $end = $row['end_timestamp'] ?? null;
+        if (! is_numeric($start) || ! is_numeric($end)) {
+            return null;
+        }
+        $ms = (int) round(((float) $end - (float) $start) * 1000);
+
+        return $ms >= 0 ? $ms : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function httpStatusFromRecord(array $row): ?int
+    {
+        $data = $row['data'] ?? null;
+        if (! is_array($data)) {
+            return null;
+        }
+        $c = $data['http.status_code'] ?? null;
+
+        return is_numeric($c) ? (int) $c : null;
+    }
+
+    private function finishedRecordsContainInternalError(): bool
+    {
+        foreach ($this->finishedRecords as $row) {
+            if (($row['status'] ?? null) === 'internal_error') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return ?array<string, mixed>
+     */
+    private function primaryRootFinishedRecord(): ?array
+    {
+        foreach ($this->finishedRecords as $row) {
+            if (($row['parent_span_id'] ?? null) === null && ($row['op'] ?? '') === SpanOperation::HTTP_SERVER) {
+                return $row;
+            }
+        }
+        foreach ($this->finishedRecords as $row) {
+            if (($row['parent_span_id'] ?? null) === null && ($row['op'] ?? '') === SpanOperation::QUEUE_PROCESS) {
+                return $row;
+            }
+        }
+        foreach ($this->finishedRecords as $row) {
+            if (($row['parent_span_id'] ?? null) === null && ($row['op'] ?? '') === SpanOperation::CONSOLE_COMMAND) {
+                return $row;
+            }
+        }
+        foreach ($this->finishedRecords as $row) {
+            if (($row['parent_span_id'] ?? null) === null) {
+                return $row;
+            }
+        }
+
+        return $this->finishedRecords[0] ?? null;
     }
 
     /**
@@ -470,6 +758,99 @@ final class Tracer
     }
 
     /**
+     * Optional error-ingest fields to split fingerprints for slow / DB-heavy requests ({@see grouping_slow_path} on the API).
+     *
+     * @return array<string, mixed>
+     */
+    public function errorIngestPerformanceGroupingHints(): array
+    {
+        if (! $this->performanceEnabled || $this->finishedRecords === []) {
+            return [];
+        }
+
+        $enabled = false;
+        $slowRootMs = 2000;
+        $slowDbTotalMs = 200;
+        if (function_exists('config')) {
+            try {
+                $cfg = config('lookout-tracing.reporting.performance_grouping');
+                $cfg = is_array($cfg) ? $cfg : [];
+                $enabled = (bool) ($cfg['enabled'] ?? false);
+                $slowRootMs = (int) ($cfg['slow_root_transaction_ms'] ?? 2000);
+                $slowDbTotalMs = (int) ($cfg['slow_db_total_ms'] ?? 200);
+            } catch (\Throwable) {
+                return [];
+            }
+        }
+        if (! $enabled) {
+            return [];
+        }
+
+        $rootMs = null;
+        $dbTotalMs = 0;
+        foreach ($this->finishedRecords as $row) {
+            $op = (string) ($row['op'] ?? '');
+            $parent = $row['parent_span_id'] ?? null;
+            $isRoot = $parent === null || $parent === '';
+            if ($isRoot && $op === SpanOperation::HTTP_SERVER) {
+                $d = $this->spanDurationMsFromFinishedRow($row);
+                if ($d !== null) {
+                    $rootMs = $d;
+                }
+            }
+            if ($op === SpanOperation::DB_QUERY) {
+                $d = $this->spanDurationMsFromFinishedRow($row);
+                if ($d !== null) {
+                    $dbTotalMs += $d;
+                }
+            }
+        }
+        if ($rootMs === null) {
+            foreach ($this->finishedRecords as $row) {
+                $parent = $row['parent_span_id'] ?? null;
+                if ($parent !== null && $parent !== '') {
+                    continue;
+                }
+                $d = $this->spanDurationMsFromFinishedRow($row);
+                if ($d !== null) {
+                    $rootMs = $rootMs === null ? $d : max($rootMs, $d);
+                }
+            }
+        }
+
+        $slowPath = ($rootMs !== null && $rootMs >= $slowRootMs)
+            || ($dbTotalMs >= $slowDbTotalMs);
+        if (! $slowPath) {
+            return [];
+        }
+
+        $out = ['grouping_slow_path' => true];
+        if ($dbTotalMs > 0) {
+            $out['grouping_db_time_ms'] = $dbTotalMs;
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function spanDurationMsFromFinishedRow(array $row): ?int
+    {
+        $data = $row['data'] ?? [];
+        if (is_array($data) && isset($data['db.duration_ms']) && is_numeric($data['db.duration_ms'])) {
+            return max(0, (int) round((float) $data['db.duration_ms']));
+        }
+        $start = $row['start_timestamp'] ?? null;
+        $end = $row['end_timestamp'] ?? null;
+        if (is_numeric($start) && is_numeric($end)) {
+            return max(0, (int) round(((float) $end - (float) $start) * 1000));
+        }
+
+        return null;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function buildTraceIngestBody(): array
@@ -480,13 +861,32 @@ final class Tracer
             return [];
         }
 
-        return [
+        $body = [
             'trace_id' => $this->traceId,
             'transaction' => $this->rootTransactionName,
             'environment' => $this->config['environment'] ?? null,
             'release' => $this->config['release'] ?? null,
             'spans' => $spans,
         ];
+        $sha = $this->config['commit_sha'] ?? null;
+        if (is_string($sha)) {
+            $sha = strtolower(trim($sha));
+            if ($sha !== '') {
+                $body['commit_sha'] = substr($sha, 0, 64);
+            }
+        }
+        $dep = $this->config['deployed_at'] ?? null;
+        if (is_numeric($dep)) {
+            $u = (float) $dep;
+            if ($u > 9999999999) {
+                $u /= 1000.0;
+            }
+            if ($u > 0) {
+                $body['deployed_at'] = $u;
+            }
+        }
+
+        return $body;
     }
 
     /**
@@ -510,8 +910,22 @@ final class Tracer
      *     response: array<string, mixed>|null,
      * }
      */
+    /**
+     * When tail sampling is enabled, drop finished spans that are not “interesting” unless
+     * {@see markTraceMustExport()} was used or upstream/distributed rules apply. Resets the
+     * forced-export flag. {@see flushWithResult()} invokes this before building the body; call
+     * this if you send traces with a custom client instead of {@see flushWithResult()}.
+     */
+    public function finalizeTailSamplingForExport(): void
+    {
+        $this->applyTailSamplingDropIfApplicable();
+        $this->traceTailExportForced = false;
+    }
+
     public function flushWithResult(): array
     {
+        $this->finalizeTailSamplingForExport();
+
         $body = $this->buildTraceIngestBody();
         if ($body === [] || empty($this->config['api_key'])) {
             return ['ok' => false, 'skipped' => true, 'status' => null, 'response' => null];
@@ -661,6 +1075,10 @@ final class Tracer
 
         if (! is_string($class) || ! class_exists($class)) {
             return new RateSampler($cfg);
+        }
+
+        if ($class === CompositeOrSampler::class) {
+            return new CompositeOrSampler($cfg);
         }
 
         $instance = new $class($cfg);

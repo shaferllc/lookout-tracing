@@ -1,6 +1,6 @@
 {
     "name": "lookout/tracing",
-    "description": "Distributed tracing, sampled performance spans (limits, Laravel collectors), breadcrumbs, exception reporting with enrichment pipeline, cron check-ins, and profiling ingest for Lookout.",
+    "description": "Distributed tracing, sampled performance spans (limits, Laravel collectors), optional browser RUM beacons, breadcrumbs, structured logs and custom metrics ingest, exception reporting with enrichment pipeline, cron check-ins, and profiling ingest for Lookout.",
     "type": "library",
     "license": "MIT",
     "require": {
@@ -12,6 +12,7 @@
     "require-dev": {
         "guzzlehttp/guzzle": "^7.8",
         "laravel/framework": "^13.0",
+        "monolog/monolog": "^3.0",
         "phpunit/phpunit": "^12.5",
         "symfony/http-client": "^7.0|^8.0",
         "psr/http-client": "^1.0"
@@ -22,12 +23,18 @@
         "symfony/http-client": "Use Lookout\\Tracing\\Http\\SymfonyHttpClientTraceDecorator to wrap Symfony HttpClientInterface.",
         "laravel/framework": "Use Lookout\\Tracing\\Laravel\\LookoutTracingServiceProvider and middleware.",
         "symfony/var-dumper": "Required for dump() breadcrumbs when LOOKOUT_INSTRUMENT_DUMP is enabled (Laravel already includes it).",
-        "slim/slim": "Wire Lookout\\Tracing\\Http\\ContinueTracePsr15Middleware in a PSR-15 stack (also works with Mezzio and similar)."
+        "slim/slim": "Wire Lookout\\Tracing\\Http\\ContinueTracePsr15Middleware in a PSR-15 stack (also works with Mezzio and similar).",
+        "monolog/monolog": "Use Lookout\\Tracing\\Logging\\Monolog\\LookoutMonologHandler to forward Monolog records to Lookout log ingest."
     },
     "autoload": {
         "psr-4": {
             "Lookout\\Tracing\\": "src/"
-        }
+        },
+        "files": [
+            "src/logging.php",
+            "src/metrics.php",
+            "src/feedback.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {

@@ -28,8 +28,6 @@ use Illuminate\Http\Client\Events\ResponseReceived;
 use Illuminate\Http\Client\Request as HttpClientRequest;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Queue\Events\JobAttempted;
-use Illuminate\Queue\Events\JobFailed;
-use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Support\Facades\Redis;
@@ -728,17 +726,20 @@ final class PerformanceInstrumentation
         self::resetTransactionCounters();
         MemoryPeakReset::beforeUnitOfWork();
 
+        $tracer = Tracer::instance();
+        $tracer->suspendBeforeQueueJobDispatch();
+
         $payload = self::jobPayload($event->job);
         $propagated = self::extractLookoutQueueTrace($payload);
         if ($propagated['sentry_trace'] !== null && $propagated['sentry_trace'] !== '') {
-            Tracer::instance()->continueTrace($propagated['sentry_trace'], $propagated['baggage'], true);
+            $tracer->continueTrace($propagated['sentry_trace'], $propagated['baggage'], true);
         } else {
-            Tracer::instance()->continueTrace(null, null, true);
+            $tracer->continueTrace(null, null, true);
         }
 
         $name = self::resolveJobName($event->job);
-        Tracer::instance()->startAutoQueueTransaction($name);
-        $span = Tracer::instance()->getCurrentSpan();
+        $tracer->startAutoQueueTransaction($name);
+        $span = $tracer->getCurrentSpan();
         if ($span !== null) {
             $maxTries = $payload['maxTries'] ?? null;
             $uuid = $payload['uuid'] ?? null;
@@ -775,7 +776,8 @@ final class PerformanceInstrumentation
             return;
         }
         self::attachTransactionInsights();
-        $span = Tracer::instance()->getCurrentSpan();
+        $tracer = Tracer::instance();
+        $span = $tracer->getCurrentSpan();
         if ($span !== null && ! $span->isFinished() && $span->op === SpanOperation::QUEUE_PROCESS) {
             if (! $event->successful()) {
                 $span->setStatus('internal_error');
@@ -795,7 +797,8 @@ final class PerformanceInstrumentation
                 $span->setData(['queue.failed_permanently' => true]);
             }
         }
-        Tracer::instance()->finishAutoQueueTransaction();
+        $tracer->finishAutoQueueTransaction();
+        $tracer->restoreAfterQueueJobAttempt();
         self::maybeFlush();
     }
 

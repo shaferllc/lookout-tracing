@@ -14,6 +14,7 @@ final class ReportTruncator
      *     max_message_length?: int,
      *     max_stack_trace_bytes?: int,
      *     max_stack_frames?: int,
+     *     max_stack_frame_args_json?: int,
      *     max_breadcrumbs?: int,
      *     max_breadcrumb_message?: int,
      *     max_breadcrumb_data_json?: int,
@@ -27,6 +28,7 @@ final class ReportTruncator
             'max_message_length' => 131_072,
             'max_stack_trace_bytes' => 524_288,
             'max_stack_frames' => 200,
+            'max_stack_frame_args_json' => 4096,
             'max_breadcrumbs' => 50,
             'max_breadcrumb_message' => 2000,
             'max_breadcrumb_data_json' => 8192,
@@ -51,8 +53,20 @@ final class ReportTruncator
         }
 
         $maxFrames = (int) $this->limits['max_stack_frames'];
+        $maxFrameArgs = (int) ($this->limits['max_stack_frame_args_json'] ?? 4096);
         if (isset($payload['stack_frames']) && is_array($payload['stack_frames'])) {
-            $payload['stack_frames'] = array_slice($payload['stack_frames'], 0, $maxFrames);
+            $frames = array_slice($payload['stack_frames'], 0, $maxFrames);
+            foreach ($frames as &$frame) {
+                if (! is_array($frame) || ! isset($frame['args'])) {
+                    continue;
+                }
+                $enc = json_encode($frame['args']);
+                if (is_string($enc) && strlen($enc) > $maxFrameArgs) {
+                    $frame['args'] = ['_truncated' => true, '_bytes' => strlen($enc)];
+                }
+            }
+            unset($frame);
+            $payload['stack_frames'] = $frames;
         }
 
         $maxCrumbs = (int) $this->limits['max_breadcrumbs'];

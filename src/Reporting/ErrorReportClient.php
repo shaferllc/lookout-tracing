@@ -7,6 +7,8 @@ namespace Lookout\Tracing\Reporting;
 use Illuminate\Contracts\Foundation\Application;
 use Lookout\Tracing\BreadcrumbBuffer;
 use Lookout\Tracing\ErrorIngestClient;
+use Lookout\Tracing\Id;
+use Lookout\Tracing\Support\DataRedactor;
 use Lookout\Tracing\ThrowableSupport;
 use Lookout\Tracing\Tracer;
 use Throwable;
@@ -17,6 +19,8 @@ use Throwable;
 final class ErrorReportClient
 {
     private static ?self $instance = null;
+
+    private static ?string $lastOccurrenceUuid = null;
 
     private bool $disabled = false;
 
@@ -51,6 +55,16 @@ final class ErrorReportClient
     public static function resetInstanceForTesting(): void
     {
         self::$instance = null;
+        self::$lastOccurrenceUuid = null;
+    }
+
+    /**
+     * Occurrence UUID from the last {@see reportThrowable} base payload (for user-feedback forms on error pages).
+     * Populated when the SDK builds a report; use with `POST /api/ingest/feedback` and `occurrence_uuid`.
+     */
+    public static function lastOccurrenceUuid(): ?string
+    {
+        return self::$lastOccurrenceUuid;
     }
 
     /**
@@ -182,6 +196,8 @@ final class ErrorReportClient
             return;
         }
 
+        Tracer::instance()->markTraceMustExport('error_report');
+
         $payload = $this->buildBasePayload($e, $app);
         foreach ($this->middleware as $mw) {
             $payload = $mw->handle($payload);
@@ -230,9 +246,38 @@ final class ErrorReportClient
             'handled' => false,
         ];
 
-        $frames = ThrowableSupport::stackFramesFromThrowable($e);
+        $repCfg = [];
+        if (function_exists('config')) {
+            try {
+                $lc = config('lookout-tracing');
+                if (is_array($lc) && is_array($lc['reporting'] ?? null)) {
+                    $repCfg = $lc['reporting'];
+                }
+            } catch (Throwable) {
+                $repCfg = [];
+            }
+        }
+        $includeStackArgs = ! empty($repCfg['include_stack_arguments']);
+
+        $frames = ThrowableSupport::stackFramesFromThrowable($e, 200, $includeStackArgs);
         if ($frames !== []) {
             $payload['stack_frames'] = $frames;
+        }
+
+        try {
+            if (method_exists($e, 'context')) {
+                /** @var callable(): array<string, mixed> $ctxFn */
+                $ctxFn = [$e, 'context'];
+                $exCtx = $ctxFn();
+                if (is_array($exCtx) && $exCtx !== []) {
+                    $payload['context'] = array_merge(
+                        isset($payload['context']) && is_array($payload['context']) ? $payload['context'] : [],
+                        ['exception_context' => DataRedactor::redact($exCtx)]
+                    );
+                }
+            }
+        } catch (Throwable) {
+            // ignore invalid exception context
         }
 
         $file = $e->getFile();
@@ -256,6 +301,28 @@ final class ErrorReportClient
                     if (is_string($release) && $release !== '') {
                         $payload['release'] = $release;
                     }
+                    $sha = $cfg['commit_sha'] ?? null;
+                    if (is_string($sha)) {
+                        $sha = strtolower(trim($sha));
+                        if ($sha !== '') {
+                            $payload['commit_sha'] = substr($sha, 0, 64);
+                        }
+                    }
+                    $dep = $cfg['deployed_at'] ?? null;
+                    if (is_numeric($dep)) {
+                        $u = (float) $dep;
+                        if ($u > 9999999999) {
+                            $u /= 1000.0;
+                        }
+                        if ($u > 0) {
+                            $payload['deployed_at'] = $u;
+                        }
+                    } elseif (is_string($dep) && trim($dep) !== '') {
+                        $ts = strtotime(trim($dep));
+                        if ($ts !== false) {
+                            $payload['deployed_at'] = (float) $ts;
+                        }
+                    }
                 }
             } catch (Throwable) {
                 // ignore
@@ -268,9 +335,28 @@ final class ErrorReportClient
             // Tracer not initialized
         }
 
+        try {
+            foreach (Tracer::instance()->errorIngestPerformanceGroupingHints() as $k => $v) {
+                if (! array_key_exists($k, $payload)) {
+                    $payload[$k] = $v;
+                }
+            }
+        } catch (Throwable) {
+            // Tracer not initialized
+        }
+
         $crumbs = BreadcrumbBuffer::all();
         if ($crumbs !== []) {
             $payload['breadcrumbs'] = $crumbs;
+        }
+
+        $existingOu = $payload['occurrence_uuid'] ?? null;
+        if (! is_string($existingOu) || trim($existingOu) === '') {
+            $ou = Id::occurrenceUuid();
+            $payload['occurrence_uuid'] = $ou;
+            self::$lastOccurrenceUuid = $ou;
+        } else {
+            self::$lastOccurrenceUuid = trim($existingOu);
         }
 
         return $payload;

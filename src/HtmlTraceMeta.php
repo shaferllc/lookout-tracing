@@ -16,8 +16,10 @@ final class HtmlTraceMeta
         $tracer ??= Tracer::instance();
         $trace = htmlspecialchars($tracer->traceparent(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $baggage = htmlspecialchars($tracer->baggageHeader(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $traceId = htmlspecialchars($tracer->traceId(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         return '<meta name="sentry-trace" content="'.$trace.'"/>'."\n"
-            .'<meta name="baggage" content="'.$baggage.'"/>';
+            .'<meta name="baggage" content="'.$baggage.'"/>'."\n"
+            .'<meta name="lookout-trace-id" content="'.$traceId.'"/>';
     }
 }

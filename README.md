@@ -55,15 +55,84 @@ Common `op` values are defined on `Lookout\Tracing\SpanOperation` (`http.server`
 ## Lookout ingest
 
 - **`Tracer::errorIngestTraceFields()`** — `trace_id`, `span_id`, `parent_span_id`, `transaction` for your error JSON body to `POST /api/ingest`.
+- **`Tracer::errorIngestPerformanceGroupingHints()`** — when **`reporting.performance_grouping.enabled`** is true (env **`LOOKOUT_REPORT_PERFORMANCE_GROUPING`**) and **`performance_enabled`** recorded spans in the same request, may add **`grouping_slow_path`** and **`grouping_db_time_ms`** so Lookout can fingerprint slow / DB-heavy errors separately (see Lookout ingest docs).
 - **`Tracer::configure([...])`** + **`Tracer::flush()`** — send finished spans to `POST /api/ingest/trace` (set `api_key`, `base_uri`, optional `environment` / `release`). Use **`Tracer::flushWithResult()`** (or **`Tracing::flushWithResult()`**) when you need the HTTP **status** (e.g. **403** if the Lookout project disabled trace ingest).
+
+## Structured logs (Sentry-style)
+
+Similar in spirit to [Sentry PHP logs](https://docs.sentry.io/platforms/php/logs/): **`lookout_logger()->info('User %s logged in', ['alice'])`**, optional **`flush()`**, and a **Monolog** handler. Rows go to **`POST /api/ingest/log`** with the same **`api_key`** / **`base_uri`** as tracing; enable with **`LOOKOUT_LOGS_ENABLED=true`** (Laravel: `config/lookout-tracing.php` → **`logging.enabled`**). Laravel registers a **terminating** flush when **`logging.enabled`** and **`logging.flush_on_terminate`** are true. Long workers should call **`lookout_logger()->flush()`** on a timer or after batches.
+
+```php
+lookout_logger()->info('order placed', null, ['order_id' => '42']);
+lookout_logger()->flush();
+```
+
+```php
+use Lookout\Tracing\Logging\Monolog\LookoutMonologHandler;
+use Monolog\Logger;
+
+$log = new Logger('app');
+$log->pushHandler(new LookoutMonologHandler());
+```
+
+## Custom metrics (Sentry-style)
+
+Similar in spirit to [Sentry PHP metrics](https://docs.sentry.io/platforms/php/metrics/): **`lookout_metrics()->count('orders.completed', 1)`**, **`gauge()`**, **`distribution()`**, optional **`MetricUnit`**, and **`flush()`**. Samples go to **`POST /api/ingest/metric`**; the active **`trace_id`** is attached when a transaction is in flight so the Lookout UI can correlate rollups with traces. Enable with **`LOOKOUT_METRICS_ENABLED=true`** (Laravel: **`metrics.enabled`**). Laravel flushes on **terminating** when **`metrics.enabled`** and **`metrics.flush_on_terminate`** are true.
+
+Optional **`MetricsIngestClient::configure(['before_send_metric' => fn (array $row): ?array => $row])`** drops or mutates rows before enqueue (return **`null`** to skip), like Sentry’s **`before_send_metric`**.
+
+```php
+use Lookout\Tracing\Metrics\MetricUnit;
+
+lookout_metrics()->count('button.click', 5, ['plan' => 'pro']);
+lookout_metrics()->distribution('page.load_ms', 42.5, ['route' => '/checkout'], MetricUnit::millisecond());
+lookout_metrics()->flush();
+```
+
+### Real User Monitoring (browser)
+
+Optional **Web Vitals** + **SPA / Livewire** navigation beacons: `POST /api/ingest/rum` (same project API key; **performance ingest** must be enabled on the project). Vanilla script with no npm dependencies:
+
+- **`resources/rum/lookout-rum.js`** — `LookoutRum.init({ endpoint, apiKey, livewireNavigate: true, traceId: () => … })`. Puts **`api_key` in the JSON body** so **`navigator.sendBeacon`** works without custom headers. Correlate with server traces via **`trace_id`** (32 hex), e.g. from **`HtmlTraceMeta`** / a `<meta name="lookout-trace-id">` you render from `Tracer::instance()->traceId` on the server.
 
 ## Error reporting client
 
 Uncaught exceptions use **`Lookout\Tracing\Reporting\ErrorReportClient`**: middleware enriches the payload (Laravel + HTTP context, git metadata, `context.attributes` from **`Lookout\Tracing\Reporting\ReportScope`** and configurable **`AttributeProviderInterface`** classes, optional **`client_solutions`** strings), then **`ReportTruncator`** enforces Lookout size limits, optional **`ReportSampler`** drops a random fraction, and the payload is POSTed immediately or **queued** and flushed on **shutdown** (`reporting.queue` / `reporting.send_immediately`).
 
-Optional **breadcrumb recorders** (same config block as core instrumentation, `instrumentation.enabled` must be true): **cache** hits/misses, **Redis** commands, **views** (view composer `*`), **outbound HTTP** (`Illuminate\Http\Client` events), **response** metadata (`ResponsePrepared`), **`dump()`** via Symfony VarDumper, plus manual **`Lookout\Tracing\GlowBreadcrumb::glow()`** and **`Lookout\Tracing\FilesystemBreadcrumb::record()`**. Env flags: `LOOKOUT_INSTRUMENT_CACHE`, `_REDIS`, `_VIEWS`, `_OUTBOUND_HTTP`, `_RESPONSE_DETAIL`, `_DUMP`.
+Optional **breadcrumb recorders** (same config block as core instrumentation, `instrumentation.enabled` must be true): **cache** hits/misses, **Redis** commands, **views** (view composer `*`), **outbound HTTP** (`Illuminate\Http\Client` events), **response** metadata (`ResponsePrepared`), **database transactions** (`TransactionBeginning` / `Committed` / `RolledBack`), **`dump()`** via Symfony VarDumper, plus manual **`Lookout\Tracing\GlowBreadcrumb::glow()`** and **`Lookout\Tracing\FilesystemBreadcrumb::record()`**. Env flags: `LOOKOUT_INSTRUMENT_CACHE`, `_REDIS`, `_VIEWS`, `_OUTBOUND_HTTP`, `_RESPONSE_DETAIL`, `_DATABASE_TRANSACTIONS`, `_DUMP`. Set **`LOOKOUT_INSTRUMENT_COMPREHENSIVE_COLLECTION=true`** to turn on the optional recorders above (plus SQL breadcrumbs and performance collectors for cache, Redis, views, log) in one step.
 
-Global no-op: `LOOKOUT_DISABLED` or `reporting.disabled`. Ingest fields **`is_log`**, **`open_frame_index`**, and **`grouping_override`** (custom fingerprint when `fingerprint` is empty; camelCase aliases **`isLog`**, **`openFrameIndex`**, **`overriddenGrouping`**) are stored on the server. In the Lookout app, **Project → Monitoring modes** can turn off **`POST /api/ingest/trace`** per project while leaving error ingest enabled.
+**Broad Laravel error context (what maps where)**
+
+| Area | Lookout |
+|------|---------|
+| Application info | `context.laravel`: framework + PHP version, **application name**, **locale**, **config cached**, **debug**, **application_env** (`APP_ENV`), route/command/queue hints |
+| Laravel context | Same `context.laravel` + **`context.log_context`** from `context()` / `Illuminate\Log\Context\Repository` |
+| Exception context | **`context.exception_context`** when the throwable implements **`context()`** (redacted) |
+| Stacktrace arguments | Structured **`stack_frames[].args`** when `reporting.include_stack_arguments` is true and PHP supplies trace args (`zend.exception_ignore_args=0`) |
+| Requests / URL / user | `url`, `user`, `issue_route`, `context.server`; HTTP breadcrumbs |
+| Server info | `context.server` (hostname, SAPI, OS, pid, limits, tz) + request `SERVER_ADDR` when present |
+| Git information | Default **`GitInformationMiddleware`** (commit, etc.) |
+| Solutions | **`SolutionsMiddleware`** + `reporting.client_solutions` |
+| Console commands | Breadcrumbs + performance spans when enabled |
+| Jobs and queues | Breadcrumbs + queue trace propagation + performance |
+| Queries | Optional SQL breadcrumbs; **DB spans** + query insights when performance DB collector on |
+| Database transactions | Breadcrumbs when `instrumentation.database_transactions` or `comprehensive_collection` |
+| Cache events | Breadcrumbs + optional cache **spans** |
+| Redis commands | Breadcrumbs + optional Redis **spans** |
+| External HTTP | Breadcrumbs + **http.client** spans (Guzzle / `Http::`) |
+| Views | View composer breadcrumbs + optional view **spans** |
+| Logs | Optional `MessageLogged` breadcrumbs; optional log **spans**; structured **`/api/ingest/log`** via `lookout_logger()` |
+| Livewire | **`context.livewire`** (component class + name) on Livewire requests |
+| Spans / errors when tracing | **`LOOKOUT_PERFORMANCE_ENABLED`**, `Tracer::markTraceMustExport` on error reports |
+| Dumps | `instrumentation.dump` → **`DumpInstrumentation`** |
+| Glows / filesystem | Manual **`GlowBreadcrumb::glow()`**, **`FilesystemBreadcrumb::record()`** |
+| Customise report | **`reporting.middleware`**, **`AttributeProviderInterface`**, **`ReportScope`** |
+
+Global no-op: `LOOKOUT_DISABLED` or `reporting.disabled`. Ingest fields **`is_log`**, **`open_frame_index`**, and **`grouping_override`** (custom fingerprint when `fingerprint` is empty; camelCase aliases **`isLog`**, **`openFrameIndex`**, **`overriddenGrouping`**) are stored on the server. In the Lookout app, **Project → Monitoring modes** can turn off **`POST /api/ingest/trace`** and **`POST /api/ingest/rum`** per project while leaving error ingest enabled.
+
+### User feedback (crash page)
+
+Similar in spirit to [Sentry user feedback](https://docs.sentry.io/platforms/php/user-feedback/): when **`ErrorReportClient`** builds an error payload it ensures an **`occurrence_uuid`** (v4) and remembers it for **`lookout_last_error_occurrence_uuid()`** / **`ErrorReportClient::lastOccurrenceUuid()`**. On your custom error view, POST that UUID with the user’s message to **`POST /api/ingest/feedback`** (same project **`api_key`**; see Lookout **Ingest API → User feedback**). The comment appears on that occurrence’s thread in the app. Alternatively use the ingest response / read API **`event_id`** (ULID) as **`event_id`** in the feedback body.
 
 ## Cron monitors (Sentry Crons–style)
 
@@ -91,6 +160,8 @@ CronClient::withMonitor('wrapped-job', fn () => doWork(), $config);
 CronClient::captureCheckIn('heartbeat', CheckInStatus::ok(), null, 12.0);
 ```
 
+Optional **`meta`** (string/number/bool values, size-limited server-side) on `captureCheckIn` attaches context to the check-in row and merges on completion.
+
 Laravel: the same service provider configures `CronClient` from `config/lookout-tracing.php` (`cron_ingest_path` defaults to `/api/ingest/cron`).
 
 ## Profiling (CPU / flame graphs)
@@ -115,7 +186,24 @@ ProfileClient::sendProfile([
 ]);
 ```
 
-Package classes under `Lookout\Tracing\Profiling\` (e.g. `ExcimerExporter`, `XhprofLikeExporter`, `SpxPayload`, `ManualPulseSampler`) help build `agent` / `format` / `data` for each backend. Laravel: `LookoutTracingServiceProvider` merges the same `api_key`, `base_uri`, and `profile_ingest_path` from `config/lookout-tracing.php`.
+**First-party aggregate hotspots** (`lookout.v1`):
+
+```php
+use Lookout\Tracing\Profiling\LookoutProfileV1Payload;
+use Lookout\Tracing\Profiling\ProfileClient;
+
+ProfileClient::sendProfile(LookoutProfileV1Payload::aggregateIngestBody(
+    [
+        ['file' => 'app/Services/Checkout.php', 'line' => 120, 'samples' => 48],
+    ],
+    meta: ['source' => 'custom-collector'],
+    context: ['trace_id' => 'abc123…', 'transaction' => 'POST /checkout'],
+));
+```
+
+Package classes under `Lookout\Tracing\Profiling\` (e.g. `ExcimerExporter`, `XhprofLikeExporter`, `SpxPayload`, `ManualPulseSampler`, `LookoutProfileV1Payload`) help build `agent` / `format` / `data` for each backend. Laravel: `LookoutTracingServiceProvider` merges the same `api_key`, `base_uri`, and `profile_ingest_path` from `config/lookout-tracing.php`.
+
+**Overhead:** Lookout does not sample profiles for you — wrap `ProfileClient::sendProfile()` (or your Excimer/Tideways hooks) so production only uploads a small fraction of requests or when duration exceeds a threshold, similar to `profiles_sample_rate` / slow-transaction rules elsewhere.
 
 ## Laravel
 
@@ -152,7 +240,7 @@ Tune knobs in `config/lookout-tracing.php` (`instrumentation.*`, `breadcrumbs_ma
 Enable with **`LOOKOUT_PERFORMANCE_ENABLED=true`** (and keep `LOOKOUT_API_KEY` / `LOOKOUT_BASE_URI` set). This turns on **sampled span recording**: OpenTelemetry-style **trace ids**, **spans**, and optional **span events**, sent to **`POST /api/ingest/trace`** via `Tracer::flush()` or **`LOOKOUT_TRACING_AUTO_FLUSH=true`**. Ensure the project allows trace ingest in **Lookout → Project settings → Monitoring modes**; otherwise the API returns **403**.
 
 1. **Middleware (order matters):** register **`lookoutTracing.continueTrace`** first, then **`lookoutTracing.performance`**, or set **`LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE=true`** to append only the performance middleware to `web` and `api` (you still add `continueTrace` yourself if it is not already in those groups).
-2. **Sampling:** default **`RateSampler`** at **10%** (`LOOKOUT_PERFORMANCE_SAMPLE_RATE=0.1`). Implement `Lookout\Tracing\Performance\Sampler` and set `performance.sampler.class` for custom logic. Traces continued via `sentry-trace` with **`sampled=0`** never record spans (propagation only).
+2. **Sampling:** default **`RateSampler`** at **10%** (`LOOKOUT_PERFORMANCE_SAMPLE_RATE=0.1`). Implement `Lookout\Tracing\Performance\Sampler` and set `performance.sampler.class` for custom logic. Traces continued via `sentry-trace` with **`sampled=0`** never record spans (propagation only). Optional **tail sampling** (`LOOKOUT_PERFORMANCE_TAIL_SAMPLING=true`): keep slow roots (`LOOKOUT_PERFORMANCE_TAIL_SLOW_MS`), errors / 5xx, optional `LOOKOUT_PERFORMANCE_TAIL_RESIDUAL_RATE` for a thin random sample of the rest — same theme as lowering `traces_sample_rate` in production while still capturing outliers.
 3. **Limits:** `performance.trace_limits` — max spans per export, max attributes per span / span event, max span events per span.
 4. **Hooks:** `Tracing::configureSpans(fn (Span $span) => …)` and `Tracing::configureSpanEvents(fn (array $event) => …|null)` — return **`null`** from the span-event callback to drop an event.
 5. **Collectors** (`performance.collectors.*`): HTTP server transaction, **database** queries (child `db.query` spans), **console** / **queue** root transactions, **log** lines as span events, and **HTTP client** spans when you attach **`GuzzleTraceMiddleware`** (see below).
@@ -196,14 +284,14 @@ The Lookout app surfaces **Traces**, **Transactions**, and **trace detail** in t
 
 ### Implemented building blocks
 
-- **`Lookout\Tracing\Interop\OpenTelemetryTraceConverter::toLookoutIngestBody()`** — OTLP-style JSON (`resourceSpans` / `scopeSpans` / `spans`) → Lookout trace ingest payload (no OpenTelemetry PHP SDK required).
+- **`Lookout\Tracing\Interop\OpenTelemetryTraceConverter`** — OTLP JSON → Lookout: **`toJobPayloads()`** (one row set per `traceId`), **`toLookoutIngestBody()`** when only one trace is present, **`fromLookoutIngestBody()`** for OTLP export from native bodies. Lookout HTTP: **`POST /api/ingest/trace/otlp`** (same auth/gate as **`/api/ingest/trace`**).
 - **`Lookout\Tracing\Http\ContinueTracePsr15Middleware`** — PSR-15 **`sentry-trace`** / **`baggage`** parsing (Slim, Mezzio, etc.).
 - **`Lookout\Tracing\Support\DataRedactor::redact()`** — recursive redaction for span **`data`** / context-style arrays.
 - **`Lookout\Tracing\Testing\TracerInspection::traceIngestBody()`** — stable access to **`buildTraceIngestBody()`** in tests.
 
 ### Still optional / app-specific
 
-- Full **OpenTelemetry PHP SDK** adapter (protobuf / exporter pipeline).
+- Dedicated **OpenTelemetry PHP SDK** exporter package (protobuf / gRPC) — HTTP JSON ingest is covered by **`/api/ingest/trace/otlp`** and the converter.
 - **PSR-15 “performance”** middleware (auto HTTP transactions) — today use manual **`Tracing::startTransaction`** or stay on Laravel.
 - **Queue-based async flush** with deduplication across workers.
 

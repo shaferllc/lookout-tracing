@@ -35,6 +35,8 @@ final class Client
 
     /**
      * Send one check-in. Returns {@code check_in_id} from the API response, or null on failure.
+     *
+     * @param  array<string, mixed>|null  $meta  Optional key/value context (strings, numbers, bools); truncated server-side.
      */
     public static function captureCheckIn(
         string $slug,
@@ -43,6 +45,7 @@ final class Client
         ?float $durationSeconds = null,
         ?MonitorConfig $monitorConfig = null,
         ?string $environment = null,
+        ?array $meta = null,
     ): ?string {
         $body = array_filter([
             'slug' => $slug,
@@ -51,6 +54,7 @@ final class Client
             'duration' => $durationSeconds,
             'monitor_config' => $monitorConfig !== null ? $monitorConfig->toArray() : null,
             'environment' => $environment,
+            'meta' => $meta !== null && $meta !== [] ? $meta : null,
         ], fn (mixed $v): bool => $v !== null);
 
         $url = self::cronUrl();
@@ -79,20 +83,20 @@ final class Client
      */
     public static function withMonitor(string $slug, callable $callback, ?MonitorConfig $monitorConfig = null): mixed
     {
-        $id = self::captureCheckIn($slug, CheckInStatus::inProgress(), null, null, $monitorConfig);
+        $id = self::captureCheckIn($slug, CheckInStatus::inProgress(), null, null, $monitorConfig, null, null);
         $start = hrtime(true);
         try {
             $result = $callback();
             $dur = (hrtime(true) - $start) / 1e9;
             if ($id !== null) {
-                self::captureCheckIn($slug, CheckInStatus::ok(), $id, $dur, null);
+                self::captureCheckIn($slug, CheckInStatus::ok(), $id, $dur, null, null, null);
             }
 
             return $result;
         } catch (\Throwable $e) {
             $dur = (hrtime(true) - $start) / 1e9;
             if ($id !== null) {
-                self::captureCheckIn($slug, CheckInStatus::error(), $id, $dur, null);
+                self::captureCheckIn($slug, CheckInStatus::error(), $id, $dur, null, null, null);
             }
             throw $e;
         }

@@ -9,6 +9,9 @@ namespace Lookout\Tracing\Profiling;
  * loops or middleware (cooperative sampling). Lower overhead than Excimer but requires code hooks.
  *
  * For production web requests, prefer {@see ExcimerExporter} when the Excimer extension is available.
+ *
+ * Emits {@see LookoutProfileV1Payload::FORMAT_SAMPLES} ({@code lookout.samples.v1}). For pre-aggregated
+ * hotspots, build {@see LookoutProfileV1Payload::aggregateIngestBody()} instead.
  */
 final class ManualPulseSampler
 {

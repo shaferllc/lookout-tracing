@@ -8,6 +8,9 @@ use Illuminate\Cache\Events\CacheHit;
 use Illuminate\Cache\Events\CacheMissed;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\Events\TransactionBeginning;
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Http\Client\Events\RequestSending;
 use Illuminate\Http\Client\Events\ResponseReceived;
 use Illuminate\Routing\Events\ResponsePrepared;
@@ -39,6 +42,10 @@ final class ExtendedBreadcrumbInstrumentation
         }
         if (! empty($cfg['response_detail'])) {
             self::registerResponseDetail($events);
+        }
+
+        if (! empty($cfg['database_transactions'])) {
+            self::registerDatabaseTransactions($events);
         }
     }
 
@@ -125,6 +132,28 @@ final class ExtendedBreadcrumbInstrumentation
                 ], 'http');
             });
         }
+    }
+
+    private static function registerDatabaseTransactions(Dispatcher $events): void
+    {
+        if (! class_exists(TransactionBeginning::class)) {
+            return;
+        }
+        $events->listen(TransactionBeginning::class, function (TransactionBeginning $e): void {
+            BreadcrumbBuffer::add('db.transaction', 'Transaction beginning', 'info', [
+                'connection' => $e->connectionName,
+            ], 'database');
+        });
+        $events->listen(TransactionCommitted::class, function (TransactionCommitted $e): void {
+            BreadcrumbBuffer::add('db.transaction', 'Transaction committed', 'info', [
+                'connection' => $e->connectionName,
+            ], 'database');
+        });
+        $events->listen(TransactionRolledBack::class, function (TransactionRolledBack $e): void {
+            BreadcrumbBuffer::add('db.transaction', 'Transaction rolled back', 'warning', [
+                'connection' => $e->connectionName,
+            ], 'database');
+        });
     }
 
     private static function registerResponseDetail(Dispatcher $events): void
