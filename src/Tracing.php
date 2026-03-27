@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing;
 
-
 /**
  * Convenience entry points (similar to {@see continueTrace()} / {@see trace()}).
  */
@@ -57,5 +56,34 @@ final class Tracing
     public static function flush(): bool
     {
         return Tracer::instance()->flush();
+    }
+
+    /**
+     * @return array{
+     *     ok: bool,
+     *     skipped: bool,
+     *     status: int|null,
+     *     response: array<string, mixed>|null,
+     * }
+     */
+    public static function flushWithResult(): array
+    {
+        return Tracer::instance()->flushWithResult();
+    }
+
+    /**
+     * @param  callable(Span): void  $callback
+     */
+    public static function configureSpans(callable $callback): void
+    {
+        Tracer::instance()->configureSpans($callback);
+    }
+
+    /**
+     * @param  callable(array<string, mixed>): (?array<string, mixed>)  $callback  Return null to drop a span event
+     */
+    public static function configureSpanEvents(callable $callback): void
+    {
+        Tracer::instance()->configureSpanEvents($callback);
     }
 }

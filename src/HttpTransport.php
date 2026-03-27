@@ -90,4 +90,38 @@ final class HttpTransport
 
         return ['ok' => $ok, 'status' => $status, 'data' => $data];
     }
+
+    /**
+     * POST JSON with limited retries on transport failure (no HTTP status) or given status codes (e.g. 429).
+     *
+     * @param  list<int>  $retryOnStatuses
+     * @return array{ok: bool, status: int|null, data: array<string, mixed>|null}
+     */
+    public static function postJsonWithResponseRetries(
+        string $url,
+        string $apiKey,
+        array $body,
+        int $maxAttempts,
+        int $delayMsBetweenAttempts,
+        array $retryOnStatuses = [429],
+    ): array {
+        $maxAttempts = max(1, $maxAttempts);
+        $last = ['ok' => false, 'status' => null, 'data' => null];
+        for ($i = 1; $i <= $maxAttempts; $i++) {
+            $last = self::postJsonWithResponse($url, $apiKey, $body);
+            if ($last['ok']) {
+                return $last;
+            }
+            $st = $last['status'];
+            $shouldRetry = $i < $maxAttempts && ($st === null || in_array($st, $retryOnStatuses, true));
+            if (! $shouldRetry) {
+                return $last;
+            }
+            if ($delayMsBetweenAttempts > 0) {
+                usleep($delayMsBetweenAttempts * 1000);
+            }
+        }
+
+        return $last;
+    }
 }

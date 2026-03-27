@@ -23,9 +23,21 @@ final class SpanOperation
 
     public const CACHE_SET = 'cache.set';
 
+    /** Laravel cache forget / Redis DEL style removals at the cache API layer */
+    public const CACHE_REMOVE = 'cache.remove';
+
+    /** Raw Redis commands (Predis/phpredis) via Laravel Redis facade */
+    public const REDIS_COMMAND = 'db.redis';
+
     public const QUEUE_PUBLISH = 'queue.publish';
 
     public const QUEUE_PROCESS = 'queue.process';
+
+    public const CONSOLE_COMMAND = 'console.command';
+
+    public const VIEW_RENDER = 'view.render';
+
+    public const LOG = 'log';
 
     public const FUNCTION = 'function';
 

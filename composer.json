@@ -1,20 +1,28 @@
 {
     "name": "lookout/tracing",
-    "description": "Distributed tracing, Laravel framework breadcrumbs, optional exception reporting, cron check-ins, and profiling ingest for Lookout.",
+    "description": "Distributed tracing, sampled performance spans (limits, Laravel collectors), breadcrumbs, exception reporting with enrichment pipeline, cron check-ins, and profiling ingest for Lookout.",
     "type": "library",
     "license": "MIT",
     "require": {
         "php": "^8.3",
-        "psr/http-message": "^2.0"
+        "psr/http-message": "^2.0",
+        "psr/http-server-handler": "^1.0",
+        "psr/http-server-middleware": "^1.0"
     },
     "require-dev": {
         "guzzlehttp/guzzle": "^7.8",
         "laravel/framework": "^13.0",
-        "phpunit/phpunit": "^12.5"
+        "phpunit/phpunit": "^12.5",
+        "symfony/http-client": "^7.0|^8.0",
+        "psr/http-client": "^1.0"
     },
     "suggest": {
-        "guzzlehttp/guzzle": "Use Lookout\\Tracing\\Http\\GuzzleTraceMiddleware for automatic outgoing headers.",
-        "laravel/framework": "Use Lookout\\Tracing\\Laravel\\LookoutTracingServiceProvider and middleware."
+        "guzzlehttp/guzzle": "Use Lookout\\Tracing\\Http\\GuzzleTraceMiddleware or Psr18TraceClient for outgoing headers and spans.",
+        "psr/http-client": "Use Lookout\\Tracing\\Http\\Psr18TraceClient to wrap any PSR-18 HTTP client.",
+        "symfony/http-client": "Use Lookout\\Tracing\\Http\\SymfonyHttpClientTraceDecorator to wrap Symfony HttpClientInterface.",
+        "laravel/framework": "Use Lookout\\Tracing\\Laravel\\LookoutTracingServiceProvider and middleware.",
+        "symfony/var-dumper": "Required for dump() breadcrumbs when LOOKOUT_INSTRUMENT_DUMP is enabled (Laravel already includes it).",
+        "slim/slim": "Wire Lookout\\Tracing\\Http\\ContinueTracePsr15Middleware in a PSR-15 stack (also works with Mezzio and similar)."
     },
     "autoload": {
         "psr-4": {

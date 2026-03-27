@@ -4,10 +4,16 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing;
 
+use Lookout\Tracing\Performance\RateSampler;
+use Lookout\Tracing\Performance\Sampler;
+use Lookout\Tracing\Performance\TraceLimiter;
+
 /**
  * Sentry-style hub: continue incoming trace, run transactions/spans, emit sentry-trace + baggage for outbound calls.
  *
  * Optional flush to Lookout {@see flush()} posts to {@code POST /api/ingest/trace}.
+ *
+ * Performance mode: root sampling, trace limits, span / span_event configurators.
  */
 final class Tracer
 {
@@ -36,6 +42,38 @@ final class Tracer
     /** @var array<string, mixed> */
     private array $config = [];
 
+    private TraceLimiter $traceLimiter;
+
+    private ?Sampler $sampler = null;
+
+    private bool $performanceEnabled = false;
+
+    private bool $httpClientSpansEnabled = true;
+
+    /** When false, spans are not appended to the export batch (trace still propagates). */
+    private bool $spanRecordingEnabled = true;
+
+    private int $recordedSpanCount = 0;
+
+    /** @var ?callable(Span): void */
+    private $configureSpan = null;
+
+    /** @var ?callable(array<string, mixed>): (?array<string, mixed>) */
+    private $configureSpanEvent = null;
+
+    private ?string $autoManagedHttpSpanId = null;
+
+    private ?string $autoManagedConsoleSpanId = null;
+
+    private ?string $autoManagedQueueSpanId = null;
+
+    private int $traceIngestMaxAttempts = 1;
+
+    private int $traceIngestRetryDelayMs = 250;
+
+    /** @var list<int> */
+    private array $traceIngestRetryStatuses = [429];
+
     public static function instance(): self
     {
         return self::$instance ??= new self;
@@ -46,30 +84,139 @@ final class Tracer
         self::$instance = null;
     }
 
+    public function __construct()
+    {
+        $this->traceLimiter = TraceLimiter::defaults();
+    }
+
     /**
      * @param  array{
      *     api_key?: string|null,
      *     base_uri?: string|null,
      *     ingest_trace_path?: string|null,
      *     environment?: string|null,
-     *     release?: string|null
+     *     release?: string|null,
+     *     performance_enabled?: bool,
+     *     http_client_spans?: bool,
+     *     trace_limits?: array<string, mixed>|null,
+     *     sampler?: Sampler|null,
+     *     trace_ingest_max_attempts?: int,
+     *     trace_ingest_retry_delay_ms?: int,
+     *     trace_ingest_retry_statuses?: list<int>,
      * }  $config
      */
     public function configure(array $config): self
     {
+        if (array_key_exists('trace_ingest_max_attempts', $config)) {
+            $this->traceIngestMaxAttempts = max(1, (int) $config['trace_ingest_max_attempts']);
+            unset($config['trace_ingest_max_attempts']);
+        }
+        if (array_key_exists('trace_ingest_retry_delay_ms', $config)) {
+            $this->traceIngestRetryDelayMs = max(0, (int) $config['trace_ingest_retry_delay_ms']);
+            unset($config['trace_ingest_retry_delay_ms']);
+        }
+        if (isset($config['trace_ingest_retry_statuses']) && is_array($config['trace_ingest_retry_statuses'])) {
+            $statuses = [];
+            foreach ($config['trace_ingest_retry_statuses'] as $s) {
+                $statuses[] = (int) $s;
+            }
+            $this->traceIngestRetryStatuses = $statuses !== [] ? array_values(array_unique($statuses)) : [429];
+            unset($config['trace_ingest_retry_statuses']);
+        }
+        if (array_key_exists('http_client_spans', $config)) {
+            $this->httpClientSpansEnabled = (bool) $config['http_client_spans'];
+            unset($config['http_client_spans']);
+        }
+        if (array_key_exists('sampler', $config)) {
+            $this->sampler = $config['sampler'] instanceof Sampler ? $config['sampler'] : null;
+            unset($config['sampler']);
+        }
+        if (isset($config['performance_enabled'])) {
+            $this->performanceEnabled = (bool) $config['performance_enabled'];
+            unset($config['performance_enabled']);
+        }
+        if (isset($config['trace_limits']) && is_array($config['trace_limits'])) {
+            $this->traceLimiter = TraceLimiter::fromConfig($config['trace_limits']);
+            unset($config['trace_limits']);
+        }
         $this->config = array_merge($this->config, $config);
 
         return $this;
     }
 
     /**
+     * @param  callable(Span): void  $callback
+     */
+    public function configureSpans(callable $callback): self
+    {
+        $this->configureSpan = $callback;
+
+        return $this;
+    }
+
+    /**
+     * @param  callable(array<string, mixed>): (?array<string, mixed>)  $callback  Return null to drop the event
+     */
+    public function configureSpanEvents(callable $callback): self
+    {
+        $this->configureSpanEvent = $callback;
+
+        return $this;
+    }
+
+    public function isPerformanceEnabled(): bool
+    {
+        return $this->performanceEnabled;
+    }
+
+    public function shouldRecordHttpClientSpans(): bool
+    {
+        return $this->httpClientSpansEnabled;
+    }
+
+    public function isSpanRecordingEnabled(): bool
+    {
+        return $this->spanRecordingEnabled;
+    }
+
+    public function traceLimiter(): TraceLimiter
+    {
+        return $this->traceLimiter;
+    }
+
+    /** @internal */
+    public function canAddSpanEvent(Span $span): bool
+    {
+        return count($span->spanEvents()) < $this->traceLimiter->maxSpanEventsPerSpan();
+    }
+
+    /** @internal */
+    public function invokeConfigureSpan(Span $span): void
+    {
+        if ($this->configureSpan !== null) {
+            ($this->configureSpan)($span);
+        }
+    }
+
+    /**
      * Extract upstream trace (same idea as {@see continueTrace()}).
      */
-    public function continueTrace(?string $sentryTraceHeader, ?string $baggageHeader): self
+    /**
+     * @param  bool  $preserveFinishedSpanBatch  When true, finished spans already recorded (e.g. a {@code queue.publish}
+     *                                           child on the HTTP worker) are kept so a sync or same-process queue job
+     *                                           exports one trace with both producer and consumer spans.
+     */
+    public function continueTrace(?string $sentryTraceHeader, ?string $baggageHeader, bool $preserveFinishedSpanBatch = false): self
     {
         $this->spanStack = [];
-        $this->finishedRecords = [];
+        if (! $preserveFinishedSpanBatch) {
+            $this->finishedRecords = [];
+            $this->recordedSpanCount = 0;
+        }
         $this->rootTransactionName = null;
+        $this->autoManagedHttpSpanId = null;
+        $this->autoManagedConsoleSpanId = null;
+        $this->autoManagedQueueSpanId = null;
 
         $parsed = SentryTraceHeader::parse($sentryTraceHeader);
         $incomingBaggage = Baggage::parse($baggageHeader);
@@ -77,18 +224,44 @@ final class Tracer
         if ($parsed !== null) {
             $this->traceId = $parsed['trace_id'];
             $this->remoteParentSpanId = $parsed['span_id'];
-            $this->defaultSampled = $parsed['sampled'];
+            $sampled = $parsed['sampled'];
+            if ($sampled === false) {
+                $this->defaultSampled = false;
+                $this->spanRecordingEnabled = false;
+            } elseif ($sampled === true) {
+                $this->defaultSampled = true;
+                $this->spanRecordingEnabled = true;
+            } else {
+                $this->applyRootSamplerForNewTraceDecision();
+            }
             $this->defaultOutgoingSpanId = $parsed['span_id'];
         } else {
             $this->traceId = Id::traceId();
             $this->remoteParentSpanId = null;
-            $this->defaultSampled = true;
+            $this->applyRootSamplerForNewTraceDecision();
             $this->defaultOutgoingSpanId = Id::spanId();
         }
 
         $this->baggageEntries = $incomingBaggage;
 
         return $this;
+    }
+
+    private function applyRootSamplerForNewTraceDecision(): void
+    {
+        if ($this->performanceEnabled && $this->sampler !== null) {
+            $decision = $this->sampler->shouldSample([
+                'trace_id' => $this->traceId,
+                'kind' => 'root',
+            ]);
+            $this->spanRecordingEnabled = $decision;
+            $this->defaultSampled = $decision;
+
+            return;
+        }
+
+        $this->spanRecordingEnabled = true;
+        $this->defaultSampled = true;
     }
 
     /**
@@ -99,6 +272,87 @@ final class Tracer
         $this->baggageEntries = Baggage::merge($this->baggageEntries, $entries);
 
         return $this;
+    }
+
+    /**
+     * Start the HTTP server transaction when none is active (used by performance middleware).
+     */
+    public function startAutoHttpServerTransaction(string $name): ?Span
+    {
+        $this->ensureInitialized();
+        if ($this->getCurrentSpan() !== null) {
+            return null;
+        }
+        $span = $this->startTransaction($name, SpanOperation::HTTP_SERVER);
+        $this->autoManagedHttpSpanId = $span->spanId;
+
+        return $span;
+    }
+
+    public function finishAutoHttpServerTransaction(?int $httpStatusCode = null): void
+    {
+        if ($this->autoManagedHttpSpanId === null) {
+            return;
+        }
+        $current = $this->getCurrentSpan();
+        if ($current !== null && $current->spanId === $this->autoManagedHttpSpanId && ! $current->isFinished()) {
+            if ($httpStatusCode !== null) {
+                $current->setData(['http.status_code' => $httpStatusCode]);
+            }
+            if ($httpStatusCode !== null && $httpStatusCode >= 500) {
+                $current->setStatus('internal_error');
+            }
+            $current->finish();
+        }
+        $this->autoManagedHttpSpanId = null;
+    }
+
+    public function startAutoConsoleTransaction(string $name): ?Span
+    {
+        $this->ensureInitialized();
+        if ($this->getCurrentSpan() !== null) {
+            return null;
+        }
+        $span = $this->startTransaction($name, SpanOperation::CONSOLE_COMMAND);
+        $this->autoManagedConsoleSpanId = $span->spanId;
+
+        return $span;
+    }
+
+    public function finishAutoConsoleTransaction(): void
+    {
+        if ($this->autoManagedConsoleSpanId === null) {
+            return;
+        }
+        $current = $this->getCurrentSpan();
+        if ($current !== null && $current->spanId === $this->autoManagedConsoleSpanId && ! $current->isFinished()) {
+            $current->finish();
+        }
+        $this->autoManagedConsoleSpanId = null;
+    }
+
+    public function startAutoQueueTransaction(string $name): ?Span
+    {
+        $this->ensureInitialized();
+        if ($this->getCurrentSpan() !== null) {
+            return null;
+        }
+        $span = $this->startTransaction($name, SpanOperation::QUEUE_PROCESS);
+        $this->autoManagedQueueSpanId = $span->spanId;
+
+        return $span;
+    }
+
+    public function finishAutoQueueTransaction(): void
+    {
+        if ($this->autoManagedQueueSpanId === null) {
+            return;
+        }
+        $current = $this->getCurrentSpan();
+        if ($current !== null && $current->spanId === $this->autoManagedQueueSpanId && ! $current->isFinished()) {
+            $current->finish();
+        }
+        $this->autoManagedQueueSpanId = null;
     }
 
     public function startTransaction(string $name, string $op = 'http.server'): Span
@@ -240,9 +494,27 @@ final class Tracer
      */
     public function flush(): bool
     {
+        return $this->flushWithResult()['ok'];
+    }
+
+    /**
+     * POST recorded spans and return the HTTP status (and JSON body when present).
+     *
+     * Use this when you need to detect **403** (trace ingest disabled for the project in Lookout),
+     * **402** (billing), or other non-2xx responses — {@see flush()} only returns a boolean.
+     *
+     * @return array{
+     *     ok: bool,
+     *     skipped: bool,
+     *     status: int|null,
+     *     response: array<string, mixed>|null,
+     * }
+     */
+    public function flushWithResult(): array
+    {
         $body = $this->buildTraceIngestBody();
         if ($body === [] || empty($this->config['api_key'])) {
-            return false;
+            return ['ok' => false, 'skipped' => true, 'status' => null, 'response' => null];
         }
 
         $base = rtrim((string) ($this->config['base_uri'] ?? ''), '/');
@@ -250,12 +522,27 @@ final class Tracer
         $path = '/'.ltrim((string) $path, '/');
         $url = $base.$path;
 
-        return HttpTransport::postJson($url, (string) $this->config['api_key'], $body);
+        $r = HttpTransport::postJsonWithResponseRetries(
+            $url,
+            (string) $this->config['api_key'],
+            $body,
+            $this->traceIngestMaxAttempts,
+            $this->traceIngestRetryDelayMs,
+            $this->traceIngestRetryStatuses,
+        );
+
+        return [
+            'ok' => $r['ok'],
+            'skipped' => false,
+            'status' => $r['status'],
+            'response' => $r['data'],
+        ];
     }
 
     public function clearFinishedSpans(): void
     {
         $this->finishedRecords = [];
+        $this->recordedSpanCount = 0;
     }
 
     /** @internal */
@@ -281,18 +568,54 @@ final class Tracer
 
             return;
         }
-        // After the active stack unwinds, keep propagating the last finished local span.
         $this->defaultOutgoingSpanId = $span->spanId;
     }
 
     /** @internal */
     public function recordSpan(Span $span): void
     {
+        if (! $this->spanRecordingEnabled) {
+            return;
+        }
+        if ($this->recordedSpanCount >= $this->traceLimiter->maxSpans()) {
+            return;
+        }
+
         $end = $span->endUnix();
         if ($end === null) {
             return;
         }
-        $row = [
+
+        $eventsOut = [];
+        foreach ($span->spanEvents() as $event) {
+            $attrs = $this->traceLimiter->trimEventAttributes($event['attributes']);
+            $row = [
+                'name' => $event['name'],
+                'timestamp' => $event['timestamp'],
+                'attributes' => $attrs,
+            ];
+            if ($this->configureSpanEvent !== null) {
+                $mapped = ($this->configureSpanEvent)($row);
+                if ($mapped === null) {
+                    continue;
+                }
+                if (is_array($mapped)) {
+                    $row = $mapped;
+                }
+            }
+            $eventsOut[] = $row;
+        }
+
+        $maxAttrs = $this->traceLimiter->maxAttributesPerSpan();
+        $reserveForSpanEvents = ($eventsOut !== [] && $maxAttrs > 0) ? 1 : 0;
+        $attrBudget = max(0, $maxAttrs - $reserveForSpanEvents);
+        $data = $this->traceLimiter->trimTopLevelKeys($span->data(), $attrBudget);
+
+        if ($eventsOut !== []) {
+            $data['span_events'] = $eventsOut;
+        }
+
+        $record = [
             'span_id' => $span->spanId,
             'parent_span_id' => $span->parentSpanId,
             'op' => $span->op,
@@ -301,11 +624,12 @@ final class Tracer
             'end_timestamp' => $end,
             'status' => $span->status(),
         ];
-        $data = $span->data();
         if ($data !== []) {
-            $row['data'] = $data;
+            $record['data'] = $data;
         }
-        $this->finishedRecords[] = $row;
+
+        $this->finishedRecords[] = $record;
+        $this->recordedSpanCount++;
     }
 
     private function currentSpanIdForPropagation(): string
@@ -323,5 +647,27 @@ final class Tracer
         if ($this->traceId === '') {
             $this->continueTrace(null, null);
         }
+    }
+
+    /**
+     * @internal  Resolve default sampler from config array (used by Laravel service provider).
+     *
+     * @param  array{class?: class-string<Sampler>|string, config?: array<string, mixed>}  $spec
+     */
+    public static function makeSamplerFromSpec(array $spec): Sampler
+    {
+        $class = $spec['class'] ?? RateSampler::class;
+        $cfg = is_array($spec['config'] ?? null) ? $spec['config'] : [];
+
+        if (! is_string($class) || ! class_exists($class)) {
+            return new RateSampler($cfg);
+        }
+
+        $instance = new $class($cfg);
+        if (! $instance instanceof Sampler) {
+            return new RateSampler($cfg);
+        }
+
+        return $instance;
     }
 }

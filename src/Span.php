@@ -10,6 +10,9 @@ final class Span
 
     private bool $finished = false;
 
+    /** @var list<array{name: string, timestamp: float, attributes: array<string, mixed>}> */
+    private array $spanEvents = [];
+
     public function __construct(
         private readonly Tracer $tracer,
         public readonly string $traceId,
@@ -23,12 +26,13 @@ final class Span
         private ?string $status = null,
     ) {}
 
-    public function startChild(string $op, ?string $description = null): self
+    public function startChild(string $op, ?string $description = null, ?float $startUnixOverride = null): self
     {
         if ($this->finished) {
             throw new \RuntimeException('Cannot start a child on a finished span.');
         }
 
+        $start = $startUnixOverride ?? microtime(true);
         $child = new self(
             $this->tracer,
             $this->traceId,
@@ -36,11 +40,41 @@ final class Span
             $this->spanId,
             $op,
             $description,
-            microtime(true),
+            $start,
         );
         $this->tracer->pushSpan($child);
 
         return $child;
+    }
+
+    /**
+     * OpenTelemetry-style instant event on this span (stored under {@code data.span_events} on ingest).
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function addSpanEvent(string $name, ?float $timestamp = null, array $attributes = []): self
+    {
+        if ($this->finished) {
+            return $this;
+        }
+        if (! $this->tracer->canAddSpanEvent($this)) {
+            return $this;
+        }
+        $this->spanEvents[] = [
+            'name' => $name,
+            'timestamp' => $timestamp ?? microtime(true),
+            'attributes' => $attributes,
+        ];
+
+        return $this;
+    }
+
+    /**
+     * @return list<array{name: string, timestamp: float, attributes: array<string, mixed>}>
+     */
+    public function spanEvents(): array
+    {
+        return $this->spanEvents;
     }
 
     /**
@@ -66,6 +100,7 @@ final class Span
             return;
         }
         $this->endUnix = $endUnix ?? microtime(true);
+        $this->tracer->invokeConfigureSpan($this);
         $this->finished = true;
         $this->tracer->recordSpan($this);
         $this->tracer->popSpanIfCurrent($this);
