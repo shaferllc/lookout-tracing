@@ -1,0 +1,10 @@
+{
+    "$schema": "https://json.schemastore.org/package.json",
+    "name": "@lookout/rum",
+    "version": "0.1.0",
+    "description": "Lookout RUM: Web Vitals and SPA / Livewire navigation beacons (vanilla IIFE, no dependencies). Shipped inside lookout/tracing; mirrored as a standalone repo for JS consumers.",
+    "license": "MIT",
+    "private": false,
+    "main": "lookout-rum.js",
+    "files": ["lookout-rum.js", "package.json", "README.md"]
+}
