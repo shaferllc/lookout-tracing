@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing;
 
-use Sentry\continueTrace;
-
 /**
  * Sentry-style hub: continue incoming trace, run transactions/spans, emit sentry-trace + baggage for outbound calls.
  *

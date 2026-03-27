@@ -117,6 +117,32 @@ Auto-discovery registers `Lookout\Tracing\Laravel\LookoutTracingServiceProvider`
 - Publish config: `php artisan vendor:publish --tag=lookout-tracing-config`
 - Env: `LOOKOUT_API_KEY`, `LOOKOUT_BASE_URI` (or `APP_URL`), optional `LOOKOUT_TRACING_AUTO_FLUSH=true`. Profile ingest path defaults to `/api/ingest/profile` (override in published config).
 
+### Framework breadcrumbs & exception reporting
+
+The provider registers **event listeners** (when `instrumentation.enabled` is true) that append **breadcrumbs** for:
+
+| Area | Laravel events (indicative) |
+|------|----------------------------|
+| HTTP | `RouteMatched`, `RequestHandled` |
+| Console | `CommandStarting`, `CommandFinished` |
+| Queue | `JobProcessing`, `JobProcessed`, `JobFailed`, `JobExceptionOccurred` |
+| Optional | `QueryExecuted` (sampled), `MessageLogged`, allowlisted domain events, or a wildcard listener |
+
+Breadcrumbs are **cleared** at each route match, Artisan command, or queue job so `queue:work` and Octane do not mix unrelated requests.
+
+Set **`LOOKOUT_REPORT_EXCEPTIONS=true`** (plus API key and base URI) to register a **`reportable`** handler on the default exception handler. It POSTs to **`POST /api/ingest`** with:
+
+- exception message, class, stack trace, and **stack frames**
+- current **breadcrumbs**
+- **trace** fields from `Tracer::errorIngestTraceFields()` when a transaction was started
+- **`context.laravel`**: framework version, PHP version, route, queue job name, Artisan command, HTTP path/method when available
+
+Tune knobs in `config/lookout-tracing.php` (`instrumentation.*`, `breadcrumbs_max`, `error_ingest_path`).
+
+### Rails
+
+For Ruby on Rails, use the copy-paste module under **`integrations/rails/`** in the Lookout repository (`lookout_framework.rb` + README): `ActiveSupport::Notifications` for controller and Active Job, optional SQL sampling, and `LookoutFramework.report_exception` from your error pipeline.
+
 ## Guzzle 7
 
 ```php
@@ -137,6 +163,8 @@ $client = new Client(['handler' => $stack]);
 
 ## Scope
 
-This library covers **manual** transactions/spans and **header propagation** in the spirit of Sentry’s PHP docs. It does **not** auto-wrap Laravel’s DB layer, HTTP client, queues, or cache the way `sentry/sentry-laravel` does; add `Tracing::trace()` (or your own listeners) around the work you want recorded, or extend the package in your app.
+**Tracing** remains **manual** (`Tracing::trace()`, transactions/spans) with optional **auto flush**; the package does not auto-instrument every DB query, outgoing HTTP client call, or cache hit as spans the way `sentry/sentry-laravel` can.
+
+**Framework instrumentation** (above) records **breadcrumbs** from HTTP, Artisan, and the queue pipeline, and can optionally log sampled SQL, log lines, and application events—those show up on **error reports**, not as separate span trees.
 
 **Crons:** Lookout stores check-ins and monitor metadata; it does **not** yet auto-open issues or email you on missed schedules like Sentry’s hosted monitors—you can build alerting on top (e.g. scheduled jobs reading the API) or extend the app later.

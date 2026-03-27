@@ -1,6 +1,6 @@
 {
     "name": "lookout/tracing",
-    "description": "Distributed tracing and cron check-ins for Lookout: Sentry-compatible tracing headers, spans, and Crons-style monitor ingest.",
+    "description": "Distributed tracing, Laravel framework breadcrumbs, optional exception reporting, cron check-ins, and profiling ingest for Lookout.",
     "type": "library",
     "license": "MIT",
     "require": {

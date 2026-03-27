@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing\Laravel;
 
+use Illuminate\Contracts\Debug\ExceptionHandler as ExceptionHandlerContract;
+use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Foundation\Exceptions\Handler as FoundationExceptionHandler;
 use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use Lookout\Tracing\Cron\Client as CronClient;
@@ -31,6 +34,9 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->configureTracerFromConfig();
         $this->configureCronClientFromConfig();
         $this->configureProfileClientFromConfig();
+
+        $this->registerFrameworkInstrumentation();
+        $this->registerExceptionReporting();
 
         if (config('lookout-tracing.auto_flush', false)) {
             /** @var Application $app */
@@ -86,5 +92,23 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             'base_uri' => $base !== '' ? $base : null,
             'profile_ingest_path' => $cfg['profile_ingest_path'] ?? '/api/ingest/profile',
         ]);
+    }
+
+    protected function registerFrameworkInstrumentation(): void
+    {
+        $events = $this->app->make(Dispatcher::class);
+        FrameworkInstrumentation::register($events);
+    }
+
+    protected function registerExceptionReporting(): void
+    {
+        $this->app->afterResolving(ExceptionHandlerContract::class, function (ExceptionHandlerContract $handler): void {
+            if (! $handler instanceof FoundationExceptionHandler) {
+                return;
+            }
+            $handler->reportable(function (\Throwable $e): void {
+                ExceptionReporter::report($e, app());
+            });
+        });
     }
 }
