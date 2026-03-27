@@ -99,6 +99,33 @@ Optional **Web Vitals** + **SPA / Livewire** navigation beacons: `POST /api/inge
 
 Uncaught exceptions use **`Lookout\Tracing\Reporting\ErrorReportClient`**: middleware enriches the payload (Laravel + HTTP context, git metadata, `context.attributes` from **`Lookout\Tracing\Reporting\ReportScope`** and configurable **`AttributeProviderInterface`** classes, optional **`client_solutions`** strings), then **`ReportTruncator`** enforces Lookout size limits, optional **`ReportSampler`** drops a random fraction, and the payload is POSTed immediately or **queued** and flushed on **shutdown** (`reporting.queue` / `reporting.send_immediately`).
 
+### Glows (Flare-style manual breadcrumbs)
+
+Similar in spirit to [Flare Laravel glows](https://flareapp.io/docs/laravel/data-collection/glows): **custom timeline notes** that appear with other **breadcrumbs** on the error in Lookout (chronological “what ran before this failed”).
+
+```php
+use Lookout\Tracing\GlowBreadcrumb;
+
+GlowBreadcrumb::glow('Payment branch: validated wallet', 'info', ['wallet_id' => $id]);
+GlowBreadcrumb::glow('Skipping cache (feature flag)', 'debug');
+```
+
+- **`$message`** — required; trimmed, max length enforced with other breadcrumbs.
+- **`$level`** — string such as `debug`, `info`, `warning`, `error` (default `info`).
+- **`$data`** — optional associative array (subject to the same redaction as other breadcrumb payloads).
+
+Internally these are breadcrumbs with **`type`** `glow` and **`category`** `glow`. They are **not** the Spatie **`Flare::glow()`** API—there is no drop-in facade. They attach to the **error ingest** breadcrumb list, not as separate **span events** on traces (Flare also shows glows on spans in performance; Lookout’s buffer is scoped to the next error report).
+
+### Manual filesystem breadcrumbs
+
+For disk I/O there is no universal Laravel hook; use **`FilesystemBreadcrumb::record()`**:
+
+```php
+use Lookout\Tracing\FilesystemBreadcrumb;
+
+FilesystemBreadcrumb::record('read', '/var/app/config.json', 'info', ['bytes' => 1024]);
+```
+
 Optional **breadcrumb recorders** (same config block as core instrumentation, `instrumentation.enabled` must be true): **cache** hits/misses, **Redis** commands, **views** (view composer `*`), **outbound HTTP** (`Illuminate\Http\Client` events), **response** metadata (`ResponsePrepared`), **database transactions** (`TransactionBeginning` / `Committed` / `RolledBack`), **`dump()`** via Symfony VarDumper, plus manual **`Lookout\Tracing\GlowBreadcrumb::glow()`** and **`Lookout\Tracing\FilesystemBreadcrumb::record()`**. Env flags: `LOOKOUT_INSTRUMENT_CACHE`, `_REDIS`, `_VIEWS`, `_OUTBOUND_HTTP`, `_RESPONSE_DETAIL`, `_DATABASE_TRANSACTIONS`, `_DUMP`. Set **`LOOKOUT_INSTRUMENT_COMPREHENSIVE_COLLECTION=true`** to turn on the optional recorders above (plus SQL breadcrumbs and performance collectors for cache, Redis, views, log) in one step.
 
 **Broad Laravel error context (what maps where)**
