@@ -1,0 +1,41 @@
+{
+    "name": "lookout/tracing",
+    "description": "Distributed tracing and cron check-ins for Lookout: Sentry-compatible tracing headers, spans, and Crons-style monitor ingest.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "psr/http-message": "^2.0"
+    },
+    "require-dev": {
+        "guzzlehttp/guzzle": "^7.8",
+        "laravel/framework": "^13.0",
+        "phpunit/phpunit": "^12.5"
+    },
+    "suggest": {
+        "guzzlehttp/guzzle": "Use Lookout\\Tracing\\Http\\GuzzleTraceMiddleware for automatic outgoing headers.",
+        "laravel/framework": "Use Lookout\\Tracing\\Laravel\\LookoutTracingServiceProvider and middleware."
+    },
+    "autoload": {
+        "psr-4": {
+            "Lookout\\Tracing\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Lookout\\Tracing\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Lookout\\Tracing\\Laravel\\LookoutTracingServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
