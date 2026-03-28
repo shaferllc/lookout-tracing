@@ -12,6 +12,7 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Lookout\Tracing\Cron\Client as CronClient;
+use Lookout\Tracing\Laravel\Console\InstallLookoutCommand;
 use Lookout\Tracing\Logging\LogIngestClient;
 use Lookout\Tracing\Metrics\MetricsIngestClient;
 use Lookout\Tracing\Profiling\ProfileClient;
@@ -30,6 +31,12 @@ final class LookoutTracingServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                InstallLookoutCommand::class,
+            ]);
+        }
+
         $this->publishes([
             __DIR__.'/config/lookout-tracing.php' => config_path('lookout-tracing.php'),
         ], 'lookout-tracing-config');

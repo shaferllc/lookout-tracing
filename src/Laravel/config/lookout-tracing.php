@@ -3,6 +3,49 @@
 declare(strict_types=1);
 
 use Lookout\Tracing\Performance\RateSampler;
+use Lookout\Tracing\Support\LookoutDsn;
+
+$lookoutDsn = LookoutDsn::parse(trim((string) env('LOOKOUT_DSN', '')));
+
+$trimEnvUrl = static function (string $key): ?string {
+    $v = env($key);
+    if (! is_string($v)) {
+        return null;
+    }
+    $t = rtrim(trim($v), '/');
+
+    return $t !== '' ? $t : null;
+};
+
+$servicesLookoutUrl = null;
+if (function_exists('config')) {
+    $u = config('services.lookout.url');
+    if (is_string($u)) {
+        $t = rtrim(trim($u), '/');
+        $servicesLookoutUrl = $t !== '' ? $t : null;
+    }
+}
+
+$baseUri = $lookoutDsn['base_uri']
+    ?? $trimEnvUrl('LOOKOUT_BASE_URI')
+    ?? $trimEnvUrl('LOOKOUT_URL')
+    ?? $servicesLookoutUrl
+    ?? $trimEnvUrl('APP_URL');
+
+$apiKey = $lookoutDsn['api_key'] ?? env('LOOKOUT_API_KEY');
+$apiKey = is_string($apiKey) && $apiKey !== '' ? $apiKey : null;
+
+$laravelQuickStart = filter_var((string) env('LOOKOUT_LARAVEL', ''), FILTER_VALIDATE_BOOLEAN);
+
+$reportExceptions = env('LOOKOUT_REPORT_EXCEPTIONS');
+$reportExceptions = $reportExceptions !== null
+    ? filter_var($reportExceptions, FILTER_VALIDATE_BOOLEAN)
+    : $laravelQuickStart;
+
+$tracingAutoFlush = env('LOOKOUT_TRACING_AUTO_FLUSH');
+$tracingAutoFlush = $tracingAutoFlush !== null
+    ? filter_var($tracingAutoFlush, FILTER_VALIDATE_BOOLEAN)
+    : $laravelQuickStart;
 
 return [
     /*
@@ -16,20 +59,21 @@ return [
     | Lookout API key
     |--------------------------------------------------------------------------
     |
-    | Required for Tracer::flush(), cron/profile clients, error reporting, and instrumentation HTTP calls.
+    | Set LOOKOUT_API_KEY, or use a single LOOKOUT_DSN (https://KEY@host) from php artisan lookout:install.
     |
     */
-    'api_key' => env('LOOKOUT_API_KEY'),
+    'api_key' => $apiKey,
 
     /*
     |--------------------------------------------------------------------------
     | Lookout base URL
     |--------------------------------------------------------------------------
     |
-    | Scheme + host + optional port, no trailing slash.
+    | Scheme + host + optional port, no trailing slash. Resolved from LOOKOUT_DSN, then LOOKOUT_BASE_URI,
+    | LOOKOUT_URL, config('services.lookout.url'), then APP_URL (self-hosted Lookout on the same URL).
     |
     */
-    'base_uri' => env('LOOKOUT_BASE_URI', env('APP_URL')),
+    'base_uri' => $baseUri,
 
     'ingest_trace_path' => '/api/ingest/trace',
 
@@ -99,7 +143,7 @@ return [
     | and trace fields. Enable explicitly in each environment (see LOOKOUT_REPORT_EXCEPTIONS).
     |
     */
-    'report_exceptions' => env('LOOKOUT_REPORT_EXCEPTIONS', false),
+    'report_exceptions' => $reportExceptions,
 
     'error_ingest_path' => env('LOOKOUT_ERROR_INGEST_PATH', '/api/ingest'),
 
@@ -266,7 +310,7 @@ return [
     | Auto flush on HTTP terminate
     |--------------------------------------------------------------------------
     */
-    'auto_flush' => env('LOOKOUT_TRACING_AUTO_FLUSH', false),
+    'auto_flush' => $tracingAutoFlush,
 
     /*
     |--------------------------------------------------------------------------

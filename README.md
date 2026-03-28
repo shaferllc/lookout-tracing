@@ -236,9 +236,30 @@ Package classes under `Lookout\Tracing\Profiling\` (e.g. `ExcimerExporter`, `Xhp
 
 Auto-discovery registers `Lookout\Tracing\Laravel\LookoutTracingServiceProvider`.
 
+### Quick install
+
+```bash
+composer require lookout/tracing
+php artisan lookout:install
+```
+
+`lookout:install` prompts for a **DSN** and appends to `.env`:
+
+```dotenv
+LOOKOUT_DSN="https://YOUR_PROJECT_API_KEY@your-lookout-host.example.com"
+LOOKOUT_LARAVEL=true
+```
+
+- **`LOOKOUT_DSN`** — single line: `https://` + project API key as the URL user + `@` + Lookout host (optional port). Percent-encode the key if it contains `@` or other reserved characters.
+- **`LOOKOUT_LARAVEL=true`** — enables **uncaught exception reporting** (`LOOKOUT_REPORT_EXCEPTIONS`) and **trace auto-flush on HTTP terminate** (`LOOKOUT_TRACING_AUTO_FLUSH`) unless you override those env vars explicitly.
+
+Non-interactive: `php artisan lookout:install --dsn="https://KEY@host.example.com"`. Pass **`--no-quick`** to skip `LOOKOUT_LARAVEL=true`.
+
+**API key only (team shares one Lookout URL):** set a default host once — `LOOKOUT_URL`, `LOOKOUT_BASE_URI`, or `config/services.php` → **`lookout.url`** — then each environment only needs **`LOOKOUT_API_KEY`**.
+
 - Middleware alias: **`lookoutTracing.continueTrace`** — call `continueTrace()` from incoming headers.
 - Publish config: `php artisan vendor:publish --tag=lookout-tracing-config`
-- Env: `LOOKOUT_API_KEY`, `LOOKOUT_BASE_URI` (or `APP_URL`), optional `LOOKOUT_TRACING_AUTO_FLUSH=true`. Profile ingest path defaults to `/api/ingest/profile` (override in published config).
+- Env resolution order for **base URI**: `LOOKOUT_DSN` host → `LOOKOUT_BASE_URI` → `LOOKOUT_URL` → `config('services.lookout.url')` → `APP_URL`. Profile ingest path defaults to `/api/ingest/profile` (override in published config).
 
 ### Framework breadcrumbs & exception reporting
 
@@ -253,7 +274,7 @@ The provider registers **event listeners** (when `instrumentation.enabled` is tr
 
 Breadcrumbs are **cleared** at each route match, Artisan command, or queue job so `queue:work` and Octane do not mix unrelated requests.
 
-Set **`LOOKOUT_REPORT_EXCEPTIONS=true`** (plus API key and base URI) to register a **`reportable`** handler on the default exception handler. It POSTs to **`POST /api/ingest`** with:
+With **`LOOKOUT_LARAVEL=true`** or **`LOOKOUT_REPORT_EXCEPTIONS=true`** (and a resolved API key + base URI), the provider registers a **`reportable`** handler on the default exception handler. It POSTs to **`POST /api/ingest`** with:
 
 - exception message, class, stack trace, and **stack frames**
 - current **breadcrumbs**
@@ -264,7 +285,7 @@ Tune knobs in `config/lookout-tracing.php` (`instrumentation.*`, `breadcrumbs_ma
 
 ### Performance monitoring (traces & spans)
 
-Enable with **`LOOKOUT_PERFORMANCE_ENABLED=true`** (and keep `LOOKOUT_API_KEY` / `LOOKOUT_BASE_URI` set). This turns on **sampled span recording**: OpenTelemetry-style **trace ids**, **spans**, and optional **span events**, sent to **`POST /api/ingest/trace`** via `Tracer::flush()` or **`LOOKOUT_TRACING_AUTO_FLUSH=true`**. Ensure the project allows trace ingest in **Lookout → Project settings → Monitoring modes**; otherwise the API returns **403**.
+Enable with **`LOOKOUT_PERFORMANCE_ENABLED=true`** (with a resolved API key and base URI from **`LOOKOUT_DSN`**, **`LOOKOUT_API_KEY`** + **`LOOKOUT_URL`**, etc.). This turns on **sampled span recording**: OpenTelemetry-style **trace ids**, **spans**, and optional **span events**, sent to **`POST /api/ingest/trace`** via `Tracer::flush()` or **`LOOKOUT_TRACING_AUTO_FLUSH=true`**. Ensure the project allows trace ingest in **Lookout → Project settings → Monitoring modes**; otherwise the API returns **403**.
 
 1. **Middleware (order matters):** register **`lookoutTracing.continueTrace`** first, then **`lookoutTracing.performance`**, or set **`LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE=true`** to append only the performance middleware to `web` and `api` (you still add `continueTrace` yourself if it is not already in those groups).
 2. **Sampling:** default **`RateSampler`** at **10%** (`LOOKOUT_PERFORMANCE_SAMPLE_RATE=0.1`). Implement `Lookout\Tracing\Performance\Sampler` and set `performance.sampler.class` for custom logic. Traces continued via `sentry-trace` with **`sampled=0`** never record spans (propagation only). Optional **tail sampling** (`LOOKOUT_PERFORMANCE_TAIL_SAMPLING=true`): keep slow roots (`LOOKOUT_PERFORMANCE_TAIL_SLOW_MS`), errors / 5xx, optional `LOOKOUT_PERFORMANCE_TAIL_RESIDUAL_RATE` for a thin random sample of the rest — same theme as lowering `traces_sample_rate` in production while still capturing outliers.
