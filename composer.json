@@ -2,6 +2,7 @@
     "name": "lookout/tracing",
     "description": "Distributed tracing, sampled performance spans (limits, Laravel collectors), optional browser RUM beacons, breadcrumbs, structured logs and custom metrics ingest, exception reporting with enrichment pipeline, cron check-ins, and profiling ingest for Lookout.",
     "type": "library",
+    "version": "1.0.0",
     "license": "MIT",
     "require": {
         "php": "^8.3",
@@ -50,7 +51,5 @@
     },
     "config": {
         "sort-packages": true
-    },
-    "minimum-stability": "dev",
-    "prefer-stable": true
+    }
 }
