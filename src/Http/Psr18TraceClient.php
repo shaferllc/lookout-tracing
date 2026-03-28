@@ -12,7 +12,7 @@ use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
 /**
- * Decorates a PSR-18 {@see ClientInterface} with {@code sentry-trace} / {@code baggage} and optional
+ * Decorates a PSR-18 {@see ClientInterface} with traceparent / {@code baggage} headers and optional
  * {@code http.client} spans (same rules as {@see GuzzleTraceMiddleware}).
  *
  * Requires {@code psr/http-client} (interface only) and a concrete client (e.g. Guzzle 7).

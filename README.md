@@ -1,30 +1,81 @@
 # lookout/tracing
 
-PHP library for **Lookout** distributed tracing with **Sentry-compatible** headers and manual instrumentation. You do **not** need the Sentry SDK; APIs mirror [Sentry PHP tracing instrumentation](https://docs.sentry.io/platforms/php/tracing/instrumentation/) and [trace propagation](https://docs.sentry.io/platforms/php/tracing/trace-propagation/) so existing patterns transfer easily.
+PHP library for **Lookout** distributed tracing: compact **traceparent**-style propagation, **W3C baggage**, manual transactions/spans, and optional Laravel integration. Wire formats stay compatible with common PHP tracing clients without naming third-party vendors here.
 
 ## Install
 
+Requirements: **PHP 8.3+** and **Composer**. You always add the library with Composer; only Laravel gets auto-wiring via a service provider.
+
+### Laravel application
+
+Run these from your **Laravel project root** (the directory that contains `artisan` and `composer.json`):
+
+1. **Add the package**
+   ```bash
+   cd /path/to/your-laravel-app
+   composer require lookout/tracing
+   ```
+   Composer updates `composer.json` / `composer.lock` and downloads `lookout/tracing` into `vendor/`.
+
+2. **Configure Lookout (pick one path)**
+   - **Interactive (recommended):** `php artisan lookout:install` — you are prompted for a **DSN** (`https://PROJECT_API_KEY@your-lookout-host.example.com`). The command appends `LOOKOUT_DSN` and `LOOKOUT_LARAVEL=true` to `.env`.
+   - **Manual:** add to `.env` yourself (see [Quick install](#quick-install) under **Laravel** below), or set `LOOKOUT_API_KEY` + `LOOKOUT_URL` if your team shares one Lookout host.
+
+3. **Clear config cache** (if you use it in this environment)
+   ```bash
+   php artisan config:clear
+   ```
+
+4. **Optional — publish config** when you need every env knob (sampling, middleware, log/metrics toggles):
+   ```bash
+   php artisan vendor:publish --tag=lookout-tracing-config
+   ```
+
+5. **Tracing middleware** — for distributed traces, register `lookoutTracing.continueTrace` (and optionally `lookoutTracing.performance`) on your `web` / `api` stacks, or use `LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE=true` for the performance middleware only (see [Performance monitoring](#performance-monitoring-traces--spans)).
+
+Laravel **auto-discovers** `Lookout\Tracing\Laravel\LookoutTracingServiceProvider`; you do not add it to `config/app.php` manually.
+
+### Other PHP projects (Symfony, Slim, custom apps, libraries)
+
+There is **no** Laravel service provider. Install the same Composer package and **configure the tracer in your bootstrap** (or a DI container):
+
 ```bash
+cd /path/to/your-php-project
 composer require lookout/tracing
 ```
 
-(This repository vendors the package from `packages/lookout-tracing` via a Composer path repository.)
-
-## Propagation
-
-- **Incoming:** parse `sentry-trace` and `baggage` (e.g. from `PSR-7` request headers or Laravel’s `Request`).
-- **Outgoing:** add the same headers to downstream HTTP calls so other services can continue the trace.
+Then wire **Lookout ingest** explicitly, for example:
 
 ```php
 use Lookout\Tracing\Tracer;
 
+Tracer::instance()->configure([
+    'api_key' => getenv('LOOKOUT_API_KEY') ?: null,
+    'base_uri' => rtrim((string) getenv('LOOKOUT_URL'), '/') ?: null,
+    'environment' => getenv('APP_ENV') ?: null,
+]);
+```
+
+Use **`Tracer`**, **`Tracing`**, **`lookout_logger()`**, **`lookout_metrics()`**, PSR-15 middleware (e.g. `ContinueTracePsr15Middleware`), and **`GuzzleTraceMiddleware`** as needed; see **Propagation**, **Custom instrumentation**, **Lookout ingest**, and **Guzzle 7** below. For Slim / Mezzio, see the `slim/slim` suggestion in `composer.json`.
+
+(This monorepo vendors the package from `packages/lookout-tracing` via a Composer path repository when developing Lookout itself.)
+
+## Propagation
+
+- **Incoming:** parse the compact trace header (see `Lookout\Tracing\TraceWireHeaders::HTTP_TRACEPARENT`) and `baggage` (e.g. from `PSR-7` request headers or Laravel’s `Request`).
+- **Outgoing:** add the same headers to downstream HTTP calls so other services can continue the trace.
+
+```php
+use Lookout\Tracing\Tracer;
+use Lookout\Tracing\TraceWireHeaders;
+
 Tracer::instance()->continueTrace(
-    $request->getHeaderLine('sentry-trace'),
-    $request->getHeaderLine('baggage'),
+    $request->getHeaderLine(TraceWireHeaders::HTTP_TRACEPARENT),
+    $request->getHeaderLine(TraceWireHeaders::HTTP_BAGGAGE),
 );
 
 $headers = Tracer::instance()->outgoingTraceHeaders();
-// [ 'sentry-trace' => '...', 'baggage' => '...' ]
+// keys: TraceWireHeaders::HTTP_TRACEPARENT, TraceWireHeaders::HTTP_BAGGAGE
 ```
 
 HTML meta tags for browser SDKs:
@@ -58,9 +109,9 @@ Common `op` values are defined on `Lookout\Tracing\SpanOperation` (`http.server`
 - **`Tracer::errorIngestPerformanceGroupingHints()`** — when **`reporting.performance_grouping.enabled`** is true (env **`LOOKOUT_REPORT_PERFORMANCE_GROUPING`**) and **`performance_enabled`** recorded spans in the same request, may add **`grouping_slow_path`** and **`grouping_db_time_ms`** so Lookout can fingerprint slow / DB-heavy errors separately (see Lookout ingest docs).
 - **`Tracer::configure([...])`** + **`Tracer::flush()`** — send finished spans to `POST /api/ingest/trace` (set `api_key`, `base_uri`, optional `environment` / `release`). Use **`Tracer::flushWithResult()`** (or **`Tracing::flushWithResult()`**) when you need the HTTP **status** (e.g. **403** if the Lookout project disabled trace ingest).
 
-## Structured logs (Sentry-style)
+## Structured logs
 
-Similar in spirit to [Sentry PHP logs](https://docs.sentry.io/platforms/php/logs/): **`lookout_logger()->info('User %s logged in', ['alice'])`**, optional **`flush()`**, and a **Monolog** handler. Rows go to **`POST /api/ingest/log`** with the same **`api_key`** / **`base_uri`** as tracing; enable with **`LOOKOUT_LOGS_ENABLED=true`** (Laravel: `config/lookout-tracing.php` → **`logging.enabled`**). Laravel registers a **terminating** flush when **`logging.enabled`** and **`logging.flush_on_terminate`** are true. Long workers should call **`lookout_logger()->flush()`** on a timer or after batches.
+**`lookout_logger()->info('User %s logged in', ['alice'])`**, optional **`flush()`**, and a **Monolog** handler. Rows go to **`POST /api/ingest/log`** with the same **`api_key`** / **`base_uri`** as tracing; enable with **`LOOKOUT_LOGS_ENABLED=true`** (Laravel: `config/lookout-tracing.php` → **`logging.enabled`**). Laravel registers a **terminating** flush when **`logging.enabled`** and **`logging.flush_on_terminate`** are true. Long workers should call **`lookout_logger()->flush()`** on a timer or after batches.
 
 ```php
 lookout_logger()->info('order placed', null, ['order_id' => '42']);
@@ -75,11 +126,11 @@ $log = new Logger('app');
 $log->pushHandler(new LookoutMonologHandler());
 ```
 
-## Custom metrics (Sentry-style)
+## Custom metrics
 
-Similar in spirit to [Sentry PHP metrics](https://docs.sentry.io/platforms/php/metrics/): **`lookout_metrics()->count('orders.completed', 1)`**, **`gauge()`**, **`distribution()`**, optional **`MetricUnit`**, and **`flush()`**. Samples go to **`POST /api/ingest/metric`**; the active **`trace_id`** is attached when a transaction is in flight so the Lookout UI can correlate rollups with traces. Enable with **`LOOKOUT_METRICS_ENABLED=true`** (Laravel: **`metrics.enabled`**). Laravel flushes on **terminating** when **`metrics.enabled`** and **`metrics.flush_on_terminate`** are true.
+**`lookout_metrics()->count('orders.completed', 1)`**, **`gauge()`**, **`distribution()`**, optional **`MetricUnit`**, and **`flush()`**. Samples go to **`POST /api/ingest/metric`**; the active **`trace_id`** is attached when a transaction is in flight so the Lookout UI can correlate rollups with traces. Enable with **`LOOKOUT_METRICS_ENABLED=true`** (Laravel: **`metrics.enabled`**). Laravel flushes on **terminating** when **`metrics.enabled`** and **`metrics.flush_on_terminate`** are true.
 
-Optional **`MetricsIngestClient::configure(['before_send_metric' => fn (array $row): ?array => $row])`** drops or mutates rows before enqueue (return **`null`** to skip), like Sentry’s **`before_send_metric`**.
+Optional **`MetricsIngestClient::configure(['before_send_metric' => fn (array $row): ?array => $row])`** drops or mutates rows before enqueue (return **`null`** to skip).
 
 ```php
 use Lookout\Tracing\Metrics\MetricUnit;
@@ -159,11 +210,11 @@ Global no-op: `LOOKOUT_DISABLED` or `reporting.disabled`. Ingest fields **`is_lo
 
 ### User feedback (crash page)
 
-Similar in spirit to [Sentry user feedback](https://docs.sentry.io/platforms/php/user-feedback/): when **`ErrorReportClient`** builds an error payload it ensures an **`occurrence_uuid`** (v4) and remembers it for **`lookout_last_error_occurrence_uuid()`** / **`ErrorReportClient::lastOccurrenceUuid()`**. On your custom error view, POST that UUID with the user’s message to **`POST /api/ingest/feedback`** (same project **`api_key`**; see Lookout **Ingest API → User feedback**). The comment appears on that occurrence’s thread in the app. Alternatively use the ingest response / read API **`event_id`** (ULID) as **`event_id`** in the feedback body.
+When **`ErrorReportClient`** builds an error payload it ensures an **`occurrence_uuid`** (v4) and remembers it for **`lookout_last_error_occurrence_uuid()`** / **`ErrorReportClient::lastOccurrenceUuid()`**. On your custom error view, POST that UUID with the user’s message to **`POST /api/ingest/feedback`** (same project **`api_key`**; see Lookout **Ingest API → User feedback**). The comment appears on that occurrence’s thread in the app. Alternatively use the ingest response / read API **`event_id`** (ULID) as **`event_id`** in the feedback body.
 
-## Cron monitors (Sentry Crons–style)
+## Cron monitors
 
-Aligned with [Sentry PHP Crons](https://docs.sentry.io/platforms/php/crons/): `in_progress` → `ok` / `error`, optional heartbeat, and monitor upsert via `monitor_config`.
+Monitor check-ins: `in_progress` → `ok` / `error`, optional heartbeat, and monitor upsert via `monitor_config`.
 
 ```php
 use Lookout\Tracing\Cron\CheckInStatus;
@@ -193,7 +244,7 @@ Laravel: the same service provider configures `CronClient` from `config/lookout-
 
 ## Profiling (CPU / flame graphs)
 
-Aligned with [Sentry PHP profiling](https://docs.sentry.io/platforms/php/profiling/) in spirit: capture with **Excimer** (speedscope JSON), **xhprof** / **Tideways**, **SPX**, or cooperative **`php.manual_pulse`** sampling (no extension), then POST to Lookout.
+Capture with **Excimer** (speedscope JSON), **xhprof** / **Tideways**, **SPX**, or cooperative **`php.manual_pulse`** sampling (no extension), then POST to Lookout.
 
 ```php
 use Lookout\Tracing\Profiling\ProfileClient;
@@ -288,14 +339,14 @@ Tune knobs in `config/lookout-tracing.php` (`instrumentation.*`, `breadcrumbs_ma
 Enable with **`LOOKOUT_PERFORMANCE_ENABLED=true`** (with a resolved API key and base URI from **`LOOKOUT_DSN`**, **`LOOKOUT_API_KEY`** + **`LOOKOUT_URL`**, etc.). This turns on **sampled span recording**: OpenTelemetry-style **trace ids**, **spans**, and optional **span events**, sent to **`POST /api/ingest/trace`** via `Tracer::flush()` or **`LOOKOUT_TRACING_AUTO_FLUSH=true`**. Ensure the project allows trace ingest in **Lookout → Project settings → Monitoring modes**; otherwise the API returns **403**.
 
 1. **Middleware (order matters):** register **`lookoutTracing.continueTrace`** first, then **`lookoutTracing.performance`**, or set **`LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE=true`** to append only the performance middleware to `web` and `api` (you still add `continueTrace` yourself if it is not already in those groups).
-2. **Sampling:** default **`RateSampler`** at **10%** (`LOOKOUT_PERFORMANCE_SAMPLE_RATE=0.1`). Implement `Lookout\Tracing\Performance\Sampler` and set `performance.sampler.class` for custom logic. Traces continued via `sentry-trace` with **`sampled=0`** never record spans (propagation only). Optional **tail sampling** (`LOOKOUT_PERFORMANCE_TAIL_SAMPLING=true`): keep slow roots (`LOOKOUT_PERFORMANCE_TAIL_SLOW_MS`), errors / 5xx, optional `LOOKOUT_PERFORMANCE_TAIL_RESIDUAL_RATE` for a thin random sample of the rest — same theme as lowering `traces_sample_rate` in production while still capturing outliers.
+2. **Sampling:** default **`RateSampler`** at **10%** (`LOOKOUT_PERFORMANCE_SAMPLE_RATE=0.1`). Implement `Lookout\Tracing\Performance\Sampler` and set `performance.sampler.class` for custom logic. Traces continued from an incoming traceparent with **`sampled=0`** never record spans (propagation only). Optional **tail sampling** (`LOOKOUT_PERFORMANCE_TAIL_SAMPLING=true`): keep slow roots (`LOOKOUT_PERFORMANCE_TAIL_SLOW_MS`), errors / 5xx, optional `LOOKOUT_PERFORMANCE_TAIL_RESIDUAL_RATE` for a thin random sample of the rest — same theme as lowering head sample rates in production while still capturing outliers.
 3. **Limits:** `performance.trace_limits` — max spans per export, max attributes per span / span event, max span events per span.
 4. **Hooks:** `Tracing::configureSpans(fn (Span $span) => …)` and `Tracing::configureSpanEvents(fn (array $event) => …|null)` — return **`null`** from the span-event callback to drop an event.
 5. **Collectors** (`performance.collectors.*`): HTTP server transaction, **database** queries (child `db.query` spans), **console** / **queue** root transactions, **log** lines as span events, and **HTTP client** spans when you attach **`GuzzleTraceMiddleware`** (see below).
 
 CLI / queue: enable **`LOOKOUT_PERFORMANCE_FLUSH_CLI_QUEUE=true`** to flush after each command or job, or call **`Tracing::flush()`** yourself.
 
-### Rails
+## Rails
 
 For Ruby on Rails, use the copy-paste module under **`packages/lookout-rails/`** in the Lookout repository (`lib/lookout_framework.rb` + README), or a git subtree mirror if you use `SPLIT_LOOKOUT_RAILS_REPO`: `ActiveSupport::Notifications` for controller and Active Job, optional SQL sampling, and `LookoutFramework.report_exception` from your error pipeline.
 
@@ -322,7 +373,7 @@ With **performance monitoring** enabled, the same middleware also records **`htt
 
 ## SDK roadmap & Lookout alignment
 
-The Lookout app surfaces **Traces**, **Transactions**, and **trace detail** in the web UI; the SDK sends **errors** (`POST /api/ingest`) and, when enabled, **spans** (`POST /api/ingest/trace`) with consistent **`trace_id`** / **`sentry-trace`** propagation.
+The Lookout app surfaces **Traces**, **Transactions**, and **trace detail** in the web UI; the SDK sends **errors** (`POST /api/ingest`) and, when enabled, **spans** (`POST /api/ingest/trace`) with consistent **`trace_id`** and compact traceparent propagation.
 
 | Server behavior | SDK support |
 |-----------------|-------------|
@@ -333,7 +384,7 @@ The Lookout app surfaces **Traces**, **Transactions**, and **trace detail** in t
 ### Implemented building blocks
 
 - **`Lookout\Tracing\Interop\OpenTelemetryTraceConverter`** — OTLP JSON → Lookout: **`toJobPayloads()`** (one row set per `traceId`), **`toLookoutIngestBody()`** when only one trace is present, **`fromLookoutIngestBody()`** for OTLP export from native bodies. Lookout HTTP: **`POST /api/ingest/trace/otlp`** (same auth/gate as **`/api/ingest/trace`**).
-- **`Lookout\Tracing\Http\ContinueTracePsr15Middleware`** — PSR-15 **`sentry-trace`** / **`baggage`** parsing (Slim, Mezzio, etc.).
+- **`Lookout\Tracing\Http\ContinueTracePsr15Middleware`** — PSR-15 traceparent / **`baggage`** parsing (Slim, Mezzio, etc.).
 - **`Lookout\Tracing\Support\DataRedactor::redact()`** — recursive redaction for span **`data`** / context-style arrays.
 - **`Lookout\Tracing\Testing\TracerInspection::traceIngestBody()`** — stable access to **`buildTraceIngestBody()`** in tests.
 
@@ -349,4 +400,4 @@ The Lookout app surfaces **Traces**, **Transactions**, and **trace detail** in t
 
 **Framework instrumentation** (above) still records **breadcrumbs** for **error reports**; performance collectors add **span trees** for the distributed trace UI when you flush to **`/api/ingest/trace`**.
 
-**Crons:** Lookout stores check-ins and monitor metadata; it does **not** yet auto-open issues or email you on missed schedules like Sentry’s hosted monitors—you can build alerting on top (e.g. scheduled jobs reading the API) or extend the app later.
+**Crons:** Lookout stores check-ins and monitor metadata; it does **not** yet auto-open issues or email you on missed schedules like some hosted cron products—you can build alerting on top (e.g. scheduled jobs reading the API) or extend the app later.

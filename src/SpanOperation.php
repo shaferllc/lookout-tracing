@@ -5,9 +5,7 @@ declare(strict_types=1);
 namespace Lookout\Tracing;
 
 /**
- * Common {@code op} values aligned with Sentry/OpenTelemetry-style semantics.
- *
- * @see https://docs.sentry.io/platforms/php/tracing/instrumentation/
+ * Common {@code op} values aligned with OpenTelemetry-style semantics.
  */
 final class SpanOperation
 {

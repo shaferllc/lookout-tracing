@@ -7,9 +7,8 @@ namespace Lookout\Tracing\Profiling;
 /**
  * Converts an {@see \ExcimerLog} instance to Lookout profile ingest JSON.
  *
- * Requires the Excimer PECL extension (same stack Sentry PHP profiling uses).
+ * Requires the Excimer PECL extension.
  *
- * @see https://docs.sentry.io/platforms/php/profiling/
  * @see https://www.mediawiki.org/wiki/Excimer
  */
 final class ExcimerExporter

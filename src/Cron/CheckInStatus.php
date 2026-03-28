@@ -5,9 +5,7 @@ declare(strict_types=1);
 namespace Lookout\Tracing\Cron;
 
 /**
- * Check-in status values for Lookout cron ingest (Sentry Crons–compatible names).
- *
- * @see https://docs.sentry.io/platforms/php/crons/
+ * Check-in status values for Lookout cron ingest.
  */
 final class CheckInStatus
 {

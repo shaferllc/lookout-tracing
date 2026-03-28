@@ -7,13 +7,14 @@ namespace Lookout\Tracing\Http;
 use Lookout\Tracing\Span;
 use Lookout\Tracing\SpanOperation;
 use Lookout\Tracing\Tracer;
+use Lookout\Tracing\TraceWireHeaders;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 use Symfony\Contracts\HttpClient\ResponseStreamInterface;
 use Throwable;
 
 /**
- * Wraps a {@see HttpClientInterface} to add {@code sentry-trace} / {@code baggage} and, when performance
+ * Wraps a {@see HttpClientInterface} to add traceparent / {@code baggage} headers and, when performance
  * monitoring is on, an {@code http.client} child span finished when the lazy response status is resolved.
  *
  * Requires {@code symfony/http-client} (or another package providing {@see HttpClientInterface}).
@@ -73,7 +74,7 @@ final class SymfonyHttpClientTraceDecorator implements HttpClientInterface
 
     /**
      * @param  array<string, mixed>  $options
-     * @param  array{sentry-trace: string, baggage: string}  $traceHeaders
+     * @param  array<string, string>  $traceHeaders  {@see Tracer::outgoingTraceHeaders()}
      * @return array<string, mixed>
      */
     private static function mergeTraceHeaders(array $options, array $traceHeaders): array
@@ -82,8 +83,9 @@ final class SymfonyHttpClientTraceDecorator implements HttpClientInterface
         if (! is_array($headers)) {
             $headers = [];
         }
-        $headers['sentry-trace'] = $traceHeaders['sentry-trace'];
-        $headers['baggage'] = $traceHeaders['baggage'];
+        $tp = TraceWireHeaders::HTTP_TRACEPARENT;
+        $headers[$tp] = $traceHeaders[$tp];
+        $headers[TraceWireHeaders::HTTP_BAGGAGE] = $traceHeaders[TraceWireHeaders::HTTP_BAGGAGE];
         $options['headers'] = $headers;
 
         return $options;

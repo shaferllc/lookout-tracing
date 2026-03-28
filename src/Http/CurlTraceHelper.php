@@ -6,6 +6,7 @@ namespace Lookout\Tracing\Http;
 
 use Lookout\Tracing\SpanOperation;
 use Lookout\Tracing\Tracer;
+use Lookout\Tracing\TraceWireHeaders;
 use Throwable;
 
 /**
@@ -25,8 +26,9 @@ final class CurlTraceHelper
     {
         $tracer ??= Tracer::instance();
         $h = $tracer->outgoingTraceHeaders();
-        $headerLines[] = 'sentry-trace: '.$h['sentry-trace'];
-        $headerLines[] = 'baggage: '.$h['baggage'];
+        $tp = TraceWireHeaders::HTTP_TRACEPARENT;
+        $headerLines[] = $tp.': '.$h[$tp];
+        $headerLines[] = TraceWireHeaders::HTTP_BAGGAGE.': '.$h[TraceWireHeaders::HTTP_BAGGAGE];
 
         return $headerLines;
     }

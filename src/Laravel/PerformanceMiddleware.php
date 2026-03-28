@@ -13,7 +13,7 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * Starts an {@code http.server} transaction when performance monitoring is enabled and no span is active.
  *
- * Register <strong>after</strong> {@see ContinueTraceMiddleware} so {@code sentry-trace} is parsed first.
+ * Register <strong>after</strong> {@see ContinueTraceMiddleware} so incoming traceparent is parsed first.
  */
 final class PerformanceMiddleware
 {

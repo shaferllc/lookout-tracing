@@ -7,9 +7,7 @@ namespace Lookout\Tracing\Cron;
 use Lookout\Tracing\HttpTransport;
 
 /**
- * PHP client for {@code POST /api/ingest/cron} (Sentry Crons–style check-ins).
- *
- * @see https://docs.sentry.io/platforms/php/crons/
+ * PHP client for {@code POST /api/ingest/cron} monitor check-ins.
  */
 final class Client
 {

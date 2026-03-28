@@ -14,9 +14,9 @@ final class Tracing
         return Tracer::instance();
     }
 
-    public static function continueTrace(?string $sentryTraceHeader, ?string $baggageHeader = null): void
+    public static function continueTrace(?string $traceParentHeader, ?string $baggageHeader = null): void
     {
-        Tracer::instance()->continueTrace($sentryTraceHeader, $baggageHeader);
+        Tracer::instance()->continueTrace($traceParentHeader, $baggageHeader);
     }
 
     public static function traceparent(): string
@@ -30,7 +30,7 @@ final class Tracing
     }
 
     /**
-     * @return array{sentry-trace: string, baggage: string}
+     * @return array<string, string> Keys {@see TraceWireHeaders::HTTP_TRACEPARENT} and {@see TraceWireHeaders::HTTP_BAGGAGE}
      */
     public static function outgoingHeaders(): array
     {

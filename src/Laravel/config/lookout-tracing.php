@@ -358,7 +358,7 @@ return [
         'flush_after_cli_and_queue' => env('LOOKOUT_PERFORMANCE_FLUSH_CLI_QUEUE', false),
 
         /*
-         * Queue: merge sentry-trace + baggage into each payload so workers continue the same trace_id.
+         * Queue: merge traceparent + baggage into each payload so workers continue the same trace_id.
          * When queue_publish_span is true, a short queue.publish child is recorded under the current span and
          * the worker’s queue.process transaction parents to that span (sync + async).
          */
@@ -373,7 +373,7 @@ return [
         ],
 
         /*
-         * Sampler for brand-new traces (no sentry-trace header). Incoming traces with sampled=0 never record.
+         * Sampler for brand-new traces (no incoming traceparent header). Incoming traces with sampled=0 never record.
          */
         'sampler' => [
             'class' => env('LOOKOUT_PERFORMANCE_SAMPLER', RateSampler::class),
@@ -385,7 +385,7 @@ return [
         /*
          * Tail sampling: record spans locally for every trace (when performance is on), then drop the batch at
          * flush unless it is “interesting” or tied to an error report / upstream sample / distributed child.
-         * Head sampler still sets the sentry-trace propagation hint (defaultSampled) when tail sampling is on.
+         * Head sampler still sets the traceparent propagation hint (defaultSampled) when tail sampling is on.
          *
          * LOOKOUT_PERFORMANCE_TAIL_SAMPLING: enable tail policy at export time.
          * LOOKOUT_PERFORMANCE_TAIL_SLOW_MS: root duration threshold (ms) for always_export_slow.

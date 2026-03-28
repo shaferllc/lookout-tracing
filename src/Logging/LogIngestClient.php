@@ -8,9 +8,8 @@ use Lookout\Tracing\HttpTransport;
 use Lookout\Tracing\Tracer;
 
 /**
- * Buffered structured logs to {@code POST /api/ingest/log}, similar in spirit to
- * Sentry’s PHP structured logs API (see https://docs.sentry.io/platforms/php/logs/):
- * {@code logger()->info(...)}, {@code flush()}, optional Monolog handler.
+ * Buffered structured logs to {@code POST /api/ingest/log}: {@code logger()->info(...)},
+ * {@code flush()}, optional Monolog handler.
  */
 final class LogIngestClient
 {

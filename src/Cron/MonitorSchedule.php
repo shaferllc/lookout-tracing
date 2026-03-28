@@ -6,8 +6,6 @@ namespace Lookout\Tracing\Cron;
 
 /**
  * Monitor schedule payload for upserting monitor configuration on check-in.
- *
- * @see https://docs.sentry.io/platforms/php/crons/
  */
 final class MonitorSchedule
 {

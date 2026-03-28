@@ -31,12 +31,13 @@ use Illuminate\Queue\Events\JobAttempted;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Support\Facades\Redis;
-use Lookout\Tracing\SentryTraceHeader;
 use Lookout\Tracing\Span;
 use Lookout\Tracing\SpanOperation;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Support\SqlFingerprint;
+use Lookout\Tracing\TracePropagationHeader;
 use Lookout\Tracing\Tracer;
+use Lookout\Tracing\TraceWireHeaders;
 use Throwable;
 use WeakMap;
 
@@ -731,8 +732,8 @@ final class PerformanceInstrumentation
 
         $payload = self::jobPayload($event->job);
         $propagated = self::extractLookoutQueueTrace($payload);
-        if ($propagated['sentry_trace'] !== null && $propagated['sentry_trace'] !== '') {
-            $tracer->continueTrace($propagated['sentry_trace'], $propagated['baggage'], true);
+        if ($propagated['trace_propagation'] !== null && $propagated['trace_propagation'] !== '') {
+            $tracer->continueTrace($propagated['trace_propagation'], $propagated['baggage'], true);
         } else {
             $tracer->continueTrace(null, null, true);
         }
@@ -831,7 +832,7 @@ final class PerformanceInstrumentation
             $displayName = $payload['job'];
         }
 
-        $parsed = SentryTraceHeader::parse($tracer->traceparent());
+        $parsed = TracePropagationHeader::parse($tracer->traceparent());
         if ($parsed === null) {
             return [];
         }
@@ -852,14 +853,16 @@ final class PerformanceInstrumentation
             }
             $pub->setData($pubData);
             $pub->finish();
-            $sentryTrace = SentryTraceHeader::format($parsed['trace_id'], $pub->spanId, $parsed['sampled']);
+            $tracePropagation = TracePropagationHeader::format($parsed['trace_id'], $pub->spanId, $parsed['sampled']);
         } else {
-            $sentryTrace = $tracer->traceparent();
+            $tracePropagation = $tracer->traceparent();
         }
+
+        $alias = TraceWireHeaders::INGEST_TRACE_ALIAS;
 
         return [
             'lookout_tracing' => [
-                'sentry_trace' => $sentryTrace,
+                $alias => $tracePropagation,
                 'baggage' => $tracer->baggageHeader(),
             ],
         ];
@@ -867,20 +870,21 @@ final class PerformanceInstrumentation
 
     /**
      * @param  array<string, mixed>  $payload
-     * @return array{sentry_trace: ?string, baggage: ?string}
+     * @return array{trace_propagation: ?string, baggage: ?string}
      */
     private static function extractLookoutQueueTrace(array $payload): array
     {
         $block = $payload['lookout_tracing'] ?? null;
         if (! is_array($block)) {
-            return ['sentry_trace' => null, 'baggage' => null];
+            return ['trace_propagation' => null, 'baggage' => null];
         }
-        $st = $block['sentry_trace'] ?? null;
+        $alias = TraceWireHeaders::INGEST_TRACE_ALIAS;
+        $st = $block[$alias] ?? null;
         $bg = $block['baggage'] ?? null;
-        $sentryTrace = is_string($st) && trim($st) !== '' ? trim($st) : null;
+        $tracePropagation = is_string($st) && trim($st) !== '' ? trim($st) : null;
         $baggage = is_string($bg) ? $bg : null;
 
-        return ['sentry_trace' => $sentryTrace, 'baggage' => $baggage];
+        return ['trace_propagation' => $tracePropagation, 'baggage' => $baggage];
     }
 
     /**

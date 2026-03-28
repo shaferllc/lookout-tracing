@@ -8,9 +8,8 @@ use Lookout\Tracing\HttpTransport;
 use Lookout\Tracing\Tracer;
 
 /**
- * Buffered custom metrics to {@code POST /api/ingest/metric}, in the spirit of
- * Sentry’s PHP metrics API (see https://docs.sentry.io/platforms/php/metrics/):
- * {@code count}, {@code gauge}, {@code distribution}, {@code flush()}.
+ * Buffered custom metrics to {@code POST /api/ingest/metric}: {@code count}, {@code gauge},
+ * {@code distribution}, {@code flush()}.
  *
  * Lookout stores each sample (with optional {@code trace_id} from the active tracer) so you can
  * correlate spikes with traces and issues in the same project.

@@ -7,13 +7,14 @@ namespace Lookout\Tracing\Http;
 use GuzzleHttp\Promise\Create;
 use Lookout\Tracing\SpanOperation;
 use Lookout\Tracing\Tracer;
+use Lookout\Tracing\TraceWireHeaders;
 use Psr\Http\Message\RequestInterface;
 use Throwable;
 
 final class GuzzleTraceMiddleware
 {
     /**
-     * Adds {@code sentry-trace} and {@code baggage} from {@see Tracer::outgoingTraceHeaders()}.
+     * Adds traceparent and baggage headers from {@see Tracer::outgoingTraceHeaders()}.
      * When performance monitoring is enabled and a current span exists, records an {@code http.client} child span.
      */
     public static function create(?Tracer $tracer = null): callable
@@ -24,9 +25,10 @@ final class GuzzleTraceMiddleware
             return static function (RequestInterface $request, array $options) use ($handler, $tracer) {
                 $headers = $tracer->outgoingTraceHeaders();
 
+                $tp = TraceWireHeaders::HTTP_TRACEPARENT;
                 $request = $request
-                    ->withHeader('sentry-trace', $headers['sentry-trace'])
-                    ->withHeader('baggage', $headers['baggage']);
+                    ->withHeader($tp, $headers[$tp])
+                    ->withHeader(TraceWireHeaders::HTTP_BAGGAGE, $headers[TraceWireHeaders::HTTP_BAGGAGE]);
 
                 $parent = $tracer->getCurrentSpan();
                 $span = null;

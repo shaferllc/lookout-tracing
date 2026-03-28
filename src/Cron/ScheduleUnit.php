@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Lookout\Tracing\Cron;
 
 /**
- * Interval units for {@see MonitorSchedule::interval()} (Sentry-style).
+ * Interval units for {@see MonitorSchedule::interval()}.
  */
 final class ScheduleUnit
 {

@@ -5,13 +5,11 @@ declare(strict_types=1);
 namespace Lookout\Tracing;
 
 /**
- * sentry-trace HTTP header: "{trace_id}-{span_id}-{sampled}"
+ * Parses and formats the compact traceparent string: "{trace_id}-{span_id}-{sampled}".
  *
  * trace_id: 32 hex chars, span_id: 16 hex chars, sampled: 0, 1, or ? (optional / omitted).
- *
- * @see https://docs.sentry.io/platforms/php/tracing/trace-propagation/
  */
-final class SentryTraceHeader
+final class TracePropagationHeader
 {
     /**
      * @return array{trace_id: string, span_id: string, sampled: bool|null}|null

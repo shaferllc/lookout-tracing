@@ -10,7 +10,7 @@ use Lookout\Tracing\Performance\Sampler;
 use Lookout\Tracing\Performance\TraceLimiter;
 
 /**
- * Sentry-style hub: continue incoming trace, run transactions/spans, emit sentry-trace + baggage for outbound calls.
+ * Central tracer: continue incoming distributed traces, run transactions/spans, emit traceparent + baggage for outbound calls.
  *
  * Optional flush to Lookout {@see flush()} posts to {@code POST /api/ingest/trace}.
  *
@@ -28,7 +28,7 @@ final class Tracer
 
     private string $traceId = '';
 
-    /** Parent span id from upstream sentry-trace (caller). */
+    /** Parent span id from upstream traceparent header (caller). */
     private ?string $remoteParentSpanId = null;
 
     /** @var array<string, string> */
@@ -86,8 +86,8 @@ final class Tracer
     /** When true, tail sampling must not drop this trace at flush (e.g. error report sent for same request). */
     private bool $traceTailExportForced = false;
 
-    /** Upstream {@code sentry-trace} had explicit {@code sampled=1}. */
-    private bool $upstreamSentrySampledTrue = false;
+    /** Upstream traceparent header had explicit {@code sampled=1}. */
+    private bool $upstreamPropagatedSampledTrue = false;
 
     public static function instance(): self
     {
@@ -234,7 +234,7 @@ final class Tracer
      *                                           child on the HTTP worker) are kept so a sync or same-process queue job
      *                                           exports one trace with both producer and consumer spans.
      */
-    public function continueTrace(?string $sentryTraceHeader, ?string $baggageHeader, bool $preserveFinishedSpanBatch = false): self
+    public function continueTrace(?string $traceParentHeader, ?string $baggageHeader, bool $preserveFinishedSpanBatch = false): self
     {
         $this->spanStack = [];
         if (! $preserveFinishedSpanBatch) {
@@ -246,9 +246,9 @@ final class Tracer
         $this->autoManagedConsoleSpanId = null;
         $this->autoManagedQueueSpanId = null;
         $this->traceTailExportForced = false;
-        $this->upstreamSentrySampledTrue = false;
+        $this->upstreamPropagatedSampledTrue = false;
 
-        $parsed = SentryTraceHeader::parse($sentryTraceHeader);
+        $parsed = TracePropagationHeader::parse($traceParentHeader);
         $incomingBaggage = Baggage::parse($baggageHeader);
 
         if ($parsed !== null) {
@@ -261,7 +261,7 @@ final class Tracer
             } elseif ($sampled === true) {
                 $this->defaultSampled = true;
                 $this->spanRecordingEnabled = true;
-                $this->upstreamSentrySampledTrue = true;
+                $this->upstreamPropagatedSampledTrue = true;
             } else {
                 $this->applyRootSamplerForNewTraceDecision();
             }
@@ -320,7 +320,7 @@ final class Tracer
      *     auto_managed_console_span_id: ?string,
      *     auto_managed_queue_span_id: ?string,
      *     trace_tail_export_forced: bool,
-     *     upstream_sentry_sampled_true: bool,
+     *     upstream_traceparent_sampled_true: bool,
      * }
      */
     private function snapshotTraceContextForQueueSuspend(): array
@@ -337,7 +337,7 @@ final class Tracer
             'auto_managed_console_span_id' => $this->autoManagedConsoleSpanId,
             'auto_managed_queue_span_id' => $this->autoManagedQueueSpanId,
             'trace_tail_export_forced' => $this->traceTailExportForced,
-            'upstream_sentry_sampled_true' => $this->upstreamSentrySampledTrue,
+            'upstream_traceparent_sampled_true' => $this->upstreamPropagatedSampledTrue,
         ];
     }
 
@@ -354,7 +354,7 @@ final class Tracer
      *     auto_managed_console_span_id: ?string,
      *     auto_managed_queue_span_id: ?string,
      *     trace_tail_export_forced: bool,
-     *     upstream_sentry_sampled_true: bool,
+     *     upstream_traceparent_sampled_true: bool,
      * }  $t
      */
     private function applyTraceContextSnapshot(array $t): void
@@ -370,7 +370,7 @@ final class Tracer
         $this->autoManagedConsoleSpanId = $t['auto_managed_console_span_id'];
         $this->autoManagedQueueSpanId = $t['auto_managed_queue_span_id'];
         $this->traceTailExportForced = $t['trace_tail_export_forced'];
-        $this->upstreamSentrySampledTrue = $t['upstream_sentry_sampled_true'];
+        $this->upstreamPropagatedSampledTrue = $t['upstream_traceparent_sampled_true'];
     }
 
     private function applyRootSamplerForNewTraceDecision(): void
@@ -428,7 +428,7 @@ final class Tracer
         if ($this->traceTailExportForced) {
             return;
         }
-        if ($this->upstreamSentrySampledTrue) {
+        if ($this->upstreamPropagatedSampledTrue) {
             return;
         }
         if ($this->remoteParentSpanId !== null && filter_var($ts['keep_distributed_participation'] ?? true, FILTER_VALIDATE_BOOLEAN)) {
@@ -691,38 +691,38 @@ final class Tracer
     }
 
     /**
-     * sentry-trace header value for outbound HTTP (current span or passthrough).
+     * Traceparent header value for outbound HTTP (current span or passthrough).
      */
     public function traceparent(): string
     {
         $this->ensureInitialized();
         $spanId = $this->currentSpanIdForPropagation();
 
-        return SentryTraceHeader::format($this->traceId, $spanId, $this->defaultSampled);
+        return TracePropagationHeader::format($this->traceId, $spanId, $this->defaultSampled);
     }
 
     public function baggageHeader(): string
     {
         $this->ensureInitialized();
         $merged = $this->baggageEntries;
-        $merged['sentry-trace_id'] = $this->traceId;
+        $merged[TraceWireHeaders::BAGGAGE_TRACE_ID] = $this->traceId;
         if ($this->rootTransactionName !== null && $this->rootTransactionName !== '') {
-            $merged['sentry-transaction'] = $this->rootTransactionName;
+            $merged[TraceWireHeaders::BAGGAGE_TRANSACTION] = $this->rootTransactionName;
         }
 
         return Baggage::build($merged);
     }
 
     /**
-     * @return array{sentry-trace: string, baggage: string}
+     * @return array<string, string> Keys {@see TraceWireHeaders::HTTP_TRACEPARENT} and {@see TraceWireHeaders::HTTP_BAGGAGE}
      */
     public function outgoingTraceHeaders(): array
     {
         $this->ensureInitialized();
 
         return [
-            'sentry-trace' => $this->traceparent(),
-            'baggage' => $this->baggageHeader(),
+            TraceWireHeaders::HTTP_TRACEPARENT => $this->traceparent(),
+            TraceWireHeaders::HTTP_BAGGAGE => $this->baggageHeader(),
         ];
     }
 

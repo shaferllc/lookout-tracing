@@ -6,10 +6,10 @@ namespace Lookout\Tracing;
 
 /**
  * Parses and builds W3C-style baggage header lists (comma-separated key=value members).
- * Sentry adds keys like sentry-trace_id, sentry-environment, sentry-release, etc.
+ * Typical entries include trace id, environment, and release keys; see {@see TraceWireHeaders}
+ * for the names this SDK writes when merging tracer context.
  *
  * @see https://www.w3.org/TR/baggage/
- * @see https://docs.sentry.io/platforms/php/tracing/trace-propagation/
  */
 final class Baggage
 {
@@ -80,7 +80,7 @@ final class Baggage
 
     /**
      * Split on commas that are not inside percent-encoded sequences is complex;
-     * Sentry baggage rarely contains literal commas in values. Simple split.
+     * most baggage payloads rarely contain literal commas in values. Simple split.
      *
      * @return list<string>
      */

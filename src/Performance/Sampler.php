@@ -7,7 +7,7 @@ namespace Lookout\Tracing\Performance;
 /**
  * Decides whether a new root trace should be recorded and exported.
  *
- * Incoming {@code sentry-trace} with sampled=0 always disables recording regardless of sampler.
+ * Incoming traceparent with sampled=0 always disables recording regardless of sampler.
  */
 interface Sampler
 {
