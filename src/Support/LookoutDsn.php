@@ -46,4 +46,38 @@ final class LookoutDsn
 
         return ['api_key' => $apiKey, 'base_uri' => $baseUri];
     }
+
+    /**
+     * Build a one-line DSN from a project ingest key and Lookout base URL (scheme + host + optional port only).
+     *
+     * @return non-empty-string|null
+     */
+    public static function fromApiKeyAndBaseUri(string $apiKey, string $baseUri): ?string
+    {
+        $apiKey = trim($apiKey);
+        $baseUri = trim($baseUri);
+        if ($apiKey === '' || $baseUri === '') {
+            return null;
+        }
+
+        if (! str_contains($baseUri, '://')) {
+            $baseUri = 'https://'.$baseUri;
+        }
+
+        $parts = parse_url($baseUri);
+        if (! is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            return null;
+        }
+
+        $scheme = strtolower((string) $parts['scheme']);
+        if ($scheme !== 'http' && $scheme !== 'https') {
+            return null;
+        }
+
+        $host = (string) $parts['host'];
+        $port = isset($parts['port']) ? ':'.(int) $parts['port'] : '';
+        $encodedKey = rawurlencode($apiKey);
+
+        return $scheme.'://'.$encodedKey.'@'.$host.$port;
+    }
 }

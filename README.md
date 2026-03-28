@@ -18,7 +18,7 @@ Run these from your **Laravel project root** (the directory that contains `artis
    Composer updates `composer.json` / `composer.lock` and downloads `lookout/tracing` into `vendor/`.
 
 2. **Configure Lookout (pick one path)**
-   - **Interactive (recommended):** `php artisan lookout:install` — you are prompted for a **DSN** (`https://PROJECT_API_KEY@your-lookout-host.example.com`). The command appends `LOOKOUT_DSN` and `LOOKOUT_LARAVEL=true` to `.env`.
+   - **Interactive (recommended):** `php artisan lookout:install` — choose **Create a new project** (Lookout web URL + your **API token** from Profile → **API tokens**) or **Use an existing DSN**. Create flow calls Lookout’s API (`GET /api/v1/me`, `POST /api/v1/projects`), then writes **`LOOKOUT_DSN`** using the new project’s ingest key. It also appends `LOOKOUT_LARAVEL=true` to `.env`.
    - **Manual:** add to `.env` yourself (see [Quick install](#quick-install) under **Laravel** below), or set `LOOKOUT_API_KEY` + `LOOKOUT_URL` if your team shares one Lookout host.
 
 3. **Clear config cache** (if you use it in this environment)
@@ -294,17 +294,22 @@ composer require lookout/tracing
 php artisan lookout:install
 ```
 
-`lookout:install` prompts for a **DSN** and appends to `.env`:
+`lookout:install` can either **create a project** on your Lookout instance (API token from Profile → API tokens + base URL) or **use an existing DSN**. Either way it appends to `.env`:
 
 ```dotenv
 LOOKOUT_DSN="https://YOUR_PROJECT_API_KEY@your-lookout-host.example.com"
 LOOKOUT_LARAVEL=true
 ```
 
-- **`LOOKOUT_DSN`** — single line: `https://` + project API key as the URL user + `@` + Lookout host (optional port). Percent-encode the key if it contains `@` or other reserved characters.
+- **`LOOKOUT_DSN`** — single line: `https://` + **project ingest API key** as the URL user + `@` + Lookout host (optional port). Percent-encode the key if it contains `@` or other reserved characters. The create-project flow obtains this key from the API after `POST /api/v1/projects`.
 - **`LOOKOUT_LARAVEL=true`** — enables **uncaught exception reporting** (`LOOKOUT_REPORT_EXCEPTIONS`) and **trace auto-flush on HTTP terminate** (`LOOKOUT_TRACING_AUTO_FLUSH`) unless you override those env vars explicitly.
 
-Non-interactive: `php artisan lookout:install --dsn="https://KEY@host.example.com"`. Pass **`--no-quick`** to skip `LOOKOUT_LARAVEL=true`.
+Non-interactive:
+
+- Existing project: `php artisan lookout:install --dsn="https://PROJECT_KEY@host.example.com"`.
+- New project: `php artisan lookout:install --url="https://host.example.com" --token="your_api_token"` (and **`--organization=ULID`** if your account has more than one organization). Optional **`--project-name="My App"`**. On the same Laravel host (e.g. this Lookout app), you can omit **`--url`** when **`APP_URL`** is set: `--token="…"` alone uses that origin.
+
+Pass **`--no-quick`** to skip `LOOKOUT_LARAVEL=true`.
 
 **API key only (team shares one Lookout URL):** set a default host once — `LOOKOUT_URL`, `LOOKOUT_BASE_URI`, or `config/services.php` → **`lookout.url`** — then each environment only needs **`LOOKOUT_API_KEY`**.
 
