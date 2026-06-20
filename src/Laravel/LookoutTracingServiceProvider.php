@@ -643,6 +643,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $events = $this->app->make(Dispatcher::class);
         ExtendedBreadcrumbInstrumentation::register($events);
         ExtendedBreadcrumbInstrumentation::registerViewComposers($this->app);
+        PerformanceInstrumentation::registerViewPerformance($this->app);
 
         $this->app->booted(function (): void {
             ExtendedBreadcrumbInstrumentation::registerRedisListener();

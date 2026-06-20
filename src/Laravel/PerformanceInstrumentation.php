@@ -19,6 +19,7 @@ use Illuminate\Cache\Events\WritingManyKeys;
 use Illuminate\Console\Events\CommandFinished;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Queue\Job as QueueJobContract;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Http\Events\RequestHandled;
@@ -32,6 +33,8 @@ use Illuminate\Queue\Events\JobAttempted;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Support\Facades\Redis;
+use Illuminate\View\Factory as ViewFactory;
+use Illuminate\View\View;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Span;
 use Lookout\Tracing\SpanOperation;
@@ -96,6 +99,10 @@ final class PerformanceInstrumentation
     private static int $cacheManyPutBatches = 0;
 
     private static int $httpClientCount = 0;
+
+    private static int $viewSpanCount = 0;
+
+    private static int $viewOverflowCount = 0;
 
     private static float $httpClientDurationMs = 0.0;
 
@@ -162,6 +169,8 @@ final class PerformanceInstrumentation
         self::$cacheManyPutBatches = 0;
         self::$httpClientCount = 0;
         self::$httpClientDurationMs = 0.0;
+        self::$viewSpanCount = 0;
+        self::$viewOverflowCount = 0;
     }
 
     public static function registerRedisPerformanceListener(): void
@@ -1204,6 +1213,13 @@ final class PerformanceInstrumentation
             $data['http.client.time_ms'] = round(self::$httpClientDurationMs, 3);
         }
 
+        if (self::collector('view') && (self::$viewSpanCount > 0 || self::$viewOverflowCount > 0)) {
+            $data['view.render_count'] = self::$viewSpanCount;
+            if (self::$viewOverflowCount > 0) {
+                $data['view.truncated_count'] = self::$viewOverflowCount;
+            }
+        }
+
         if (in_array($span->op, [SpanOperation::HTTP_SERVER, SpanOperation::CONSOLE_COMMAND, SpanOperation::QUEUE_PROCESS], true)) {
             $data['php.memory_peak_bytes'] = memory_get_peak_usage(true);
             $data['php.memory_usage_bytes'] = memory_get_usage(true);
@@ -1221,6 +1237,131 @@ final class PerformanceInstrumentation
         }
 
         return is_object($job) ? $job::class : 'queue.job';
+    }
+
+    /**
+     * Register a wildcard view composer that records one zero-duration {@code view.render}
+     * child span per composing view. Gated by the {@code view} performance collector
+     * (default off; auto-on under comprehensive_collection). Laravel emits no
+     * "view rendered" event, so these are point spans (start === end) carrying the view
+     * name (in description, for aggregation), relative path, and data-key names only.
+     */
+    public static function registerViewPerformance(Application $app): void
+    {
+        $perf = config('lookout-tracing.performance');
+        if (! is_array($perf) || empty($perf['enabled'])) {
+            return;
+        }
+        $collectors = is_array($perf['collectors'] ?? null) ? $perf['collectors'] : [];
+        if (empty($collectors['view'])) {
+            return;
+        }
+
+        $app->afterResolving('view', function (ViewFactory $factory): void {
+            $factory->composer('*', function (View $view): void {
+                self::onViewComposing($view);
+            });
+        });
+    }
+
+    private static function onViewComposing(View $view): void
+    {
+        if (! self::performanceEnabled() || ! self::collector('view')) {
+            return;
+        }
+        $parent = Tracer::instance()->getCurrentSpan();
+        if ($parent === null || $parent->isFinished() || ! Tracer::instance()->isSpanRecordingEnabled()) {
+            return;
+        }
+
+        $name = $view->name();
+        if ($name === '') {
+            $name = 'view';
+        }
+
+        if (self::viewIsDenied($name)) {
+            return;
+        }
+
+        if (self::$viewSpanCount >= self::viewMaxPerRequest()) {
+            self::$viewOverflowCount++;
+
+            return;
+        }
+
+        $index = self::$viewSpanCount;
+        self::$viewSpanCount++;
+
+        $data = [
+            'view.index' => $index,
+            'view.nested' => $index > 0,
+        ];
+        $path = self::viewRelativePath($view);
+        if ($path !== null) {
+            $data['view.path'] = $path;
+        }
+        $keys = self::viewDataKeys($view);
+        if ($keys !== []) {
+            $data['view.data_keys'] = $keys;
+        }
+
+        $now = microtime(true);
+        $child = $parent->startChild(SpanOperation::VIEW_RENDER, substr($name, 0, 512), $now);
+        $child->setData($data);
+        $child->finish($now);
+    }
+
+    private static function viewIsDenied(string $name): bool
+    {
+        // Skip namespaced vendor/package views (e.g. pagination::*, mail::message).
+        if (str_contains($name, '::')) {
+            return true;
+        }
+
+        $perf = config('lookout-tracing.performance');
+        $patterns = is_array($perf) && is_array($perf['view_deny'] ?? null) ? $perf['view_deny'] : [];
+        foreach ($patterns as $pattern) {
+            if (is_string($pattern) && $pattern !== '' && str_contains($name, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function viewMaxPerRequest(): int
+    {
+        $perf = config('lookout-tracing.performance');
+        $max = is_array($perf) ? (int) ($perf['view_max_per_request'] ?? 50) : 50;
+
+        return max(1, $max);
+    }
+
+    private static function viewRelativePath(View $view): ?string
+    {
+        $path = $view->getPath();
+        if (! is_string($path) || $path === '') {
+            return null;
+        }
+        $base = base_path();
+        if (str_starts_with($path, $base)) {
+            $path = ltrim(substr($path, strlen($base)), '/\\');
+        }
+
+        return substr($path, 0, 512);
+    }
+
+    /**
+     * @return list<string> view variable names only — never values (PII-safe)
+     */
+    private static function viewDataKeys(View $view): array
+    {
+        $data = $view->getData();
+        $keys = array_values(array_filter(array_keys($data), 'is_string'));
+        $keys = array_values(array_diff($keys, ['__env', 'app', 'errors', 'obLevel']));
+        sort($keys);
+
+        return array_slice($keys, 0, 50);
     }
 
     private static function performanceEnabled(): bool

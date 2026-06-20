@@ -607,6 +607,14 @@ return [
             'view' => env('LOOKOUT_PERFORMANCE_COLLECT_VIEW', false),
         ],
 
+        /*
+         * View collector (collectors.view): records one zero-duration view.render span per
+         * composing view. High volume — capped per request, and namespaced vendor views
+         * (containing "::") are skipped. Add substrings to view_deny to exclude more by name.
+         */
+        'view_max_per_request' => (int) env('LOOKOUT_PERFORMANCE_VIEW_MAX_PER_REQUEST', 50),
+        'view_deny' => array_values(array_filter(array_map('trim', explode(',', (string) env('LOOKOUT_PERFORMANCE_VIEW_DENY', ''))))),
+
         'database_sample_every' => (int) env('LOOKOUT_PERFORMANCE_DB_SAMPLE_EVERY', 1),
 
         'query_insights' => [
