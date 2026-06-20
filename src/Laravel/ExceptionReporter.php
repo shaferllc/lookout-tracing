@@ -28,7 +28,7 @@ final class ExceptionReporter
         }
     }
 
-    private static function reportingEnabled(): bool
+    public static function reportingEnabled(): bool
     {
         $cfg = config('lookout-tracing');
         if (! is_array($cfg) || empty($cfg['report_exceptions'])) {

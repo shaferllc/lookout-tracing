@@ -213,6 +213,70 @@ final class ErrorReportClient
         $this->queue->push($payload);
     }
 
+    /**
+     * Report a completed HTTP 404 response (handled warning, not an uncaught exception).
+     */
+    public function reportHttpNotFound(
+        string $method,
+        string $path,
+        string $fullUrl,
+        ?string $exceptionClass = null,
+        ?Application $app = null,
+        string $language = 'php',
+    ): void {
+        if ($this->disabled || $this->transport === null) {
+            return;
+        }
+        if (! $this->shouldReportHttp404()) {
+            return;
+        }
+        if (! $this->sampler->shouldKeep()) {
+            return;
+        }
+
+        Tracer::instance()->markTraceMustExport('error_report');
+
+        $normalizedPath = self::normalizeHttpPath($path);
+        $payload = [
+            'message' => self::formatHttpNotFoundMessage($method, $path),
+            'exception_class' => $exceptionClass ?? 'Symfony\Component\HttpKernel\Exception\NotFoundHttpException',
+            'level' => 'warning',
+            'handled' => true,
+            'language' => $language,
+            'route' => $normalizedPath,
+            'context' => [
+                'http' => [
+                    'method' => strtoupper($method),
+                    'status_code' => 404,
+                    'url' => $fullUrl,
+                    'path' => $normalizedPath,
+                ],
+            ],
+        ];
+
+        foreach ($this->middleware as $mw) {
+            $payload = $mw->handle($payload);
+        }
+        $payload = $this->truncator->trim($payload);
+
+        $existingOu = $payload['occurrence_uuid'] ?? null;
+        if (! is_string($existingOu) || trim($existingOu) === '') {
+            $ou = Id::occurrenceUuid();
+            $payload['occurrence_uuid'] = $ou;
+            self::$lastOccurrenceUuid = $ou;
+        } else {
+            self::$lastOccurrenceUuid = trim($existingOu);
+        }
+
+        if ($this->sendImmediately || ! $this->queueEnabled) {
+            ErrorIngestClient::send($payload, $this->transport);
+
+            return;
+        }
+
+        $this->queue->push($payload);
+    }
+
     public function flush(): void
     {
         if ($this->disabled || $this->transport === null) {
@@ -360,5 +424,37 @@ final class ErrorReportClient
         }
 
         return $payload;
+    }
+
+    private function shouldReportHttp404(): bool
+    {
+        if (! function_exists('config')) {
+            return true;
+        }
+
+        try {
+            $cfg = config('lookout-tracing');
+            if (! is_array($cfg) || empty($cfg['report_exceptions'])) {
+                return false;
+            }
+
+            return (bool) ($cfg['report_http_404'] ?? true);
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    public static function formatHttpNotFoundMessage(string $method, string $path): string
+    {
+        return sprintf('HTTP 404 Not Found: %s %s', strtoupper($method), self::normalizeHttpPath($path));
+    }
+
+    public static function normalizeHttpPath(string $path): string
+    {
+        if ($path === '') {
+            return '/';
+        }
+
+        return str_starts_with($path, '/') ? $path : '/'.$path;
     }
 }

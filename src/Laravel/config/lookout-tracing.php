@@ -145,6 +145,18 @@ return [
     */
     'report_exceptions' => $reportExceptions,
 
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP 404 reporting
+    |--------------------------------------------------------------------------
+    |
+    | When true (and report_exceptions is enabled), completed HTTP responses with status 404
+    | are sent to Lookout as handled warning events. Laravel normally skips NotFoundHttpException
+    | in the exception reporter, so this listens on RequestHandled instead.
+    |
+    */
+    'report_http_404' => filter_var(env('LOOKOUT_REPORT_HTTP_404', true), FILTER_VALIDATE_BOOLEAN),
+
     'error_ingest_path' => env('LOOKOUT_ERROR_INGEST_PATH', '/api/ingest'),
 
     'environment' => env('APP_ENV'),

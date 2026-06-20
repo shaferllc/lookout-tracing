@@ -61,6 +61,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->registerExtendedInstrumentation();
         $this->registerOctanePerformanceHooks();
         $this->registerExceptionReporting();
+        $this->registerHttpNotFoundReporting();
 
         if (config('lookout-tracing.auto_flush', false)) {
             /** @var Application $app */
@@ -399,5 +400,16 @@ final class LookoutTracingServiceProvider extends ServiceProvider
                 ExceptionReporter::report($e, app());
             });
         });
+    }
+
+    protected function registerHttpNotFoundReporting(): void
+    {
+        if (! HttpNotFoundReporter::enabled()) {
+            return;
+        }
+
+        /** @var Dispatcher $events */
+        $events = $this->app->make(Dispatcher::class);
+        HttpNotFoundReporter::register($events);
     }
 }
