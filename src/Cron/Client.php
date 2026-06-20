@@ -18,7 +18,8 @@ final class Client
      * @param  array{
      *     api_key?: string|null,
      *     base_uri?: string|null,
-     *     cron_ingest_path?: string|null
+     *     cron_ingest_path?: string|null,
+     *     enabled?: bool
      * }  $config
      */
     public static function configure(array $config): void
@@ -29,6 +30,11 @@ final class Client
     public static function resetForTesting(): void
     {
         self::$config = [];
+    }
+
+    public static function isEnabled(): bool
+    {
+        return (bool) (self::$config['enabled'] ?? true);
     }
 
     /**
@@ -45,6 +51,10 @@ final class Client
         ?string $environment = null,
         ?array $meta = null,
     ): ?string {
+        if (! self::isEnabled()) {
+            return null;
+        }
+
         $body = array_filter([
             'slug' => $slug,
             'status' => $status,
@@ -81,6 +91,10 @@ final class Client
      */
     public static function withMonitor(string $slug, callable $callback, ?MonitorConfig $monitorConfig = null): mixed
     {
+        if (! self::isEnabled()) {
+            return $callback();
+        }
+
         $id = self::captureCheckIn($slug, CheckInStatus::inProgress(), null, null, $monitorConfig, null, null);
         $start = hrtime(true);
         try {

@@ -37,8 +37,8 @@ final class AutoProfiler
 
     private static ?string $release = null;
 
-    /** Active \ExcimerProfiler while a capture is running, else null. */
-    private static ?object $profiler = null;
+    /** Active capture while profiling, else null. */
+    private static ?ProfileCapture $capture = null;
 
     private static float $startedAt = 0.0;
 
@@ -54,7 +54,7 @@ final class AutoProfiler
      *     min_duration_ms?: int|string,
      *     max_samples?: int|string,
      *     environment?: string|null,
-     *     release?: string|null
+     *     release?: string|null,
      * } $cfg
      */
     public static function configure(array $cfg): void
@@ -87,7 +87,7 @@ final class AutoProfiler
 
     public static function isRunning(): bool
     {
-        return self::$profiler !== null;
+        return self::$capture !== null;
     }
 
     /**
@@ -97,26 +97,22 @@ final class AutoProfiler
     public static function maybeStart(): void
     {
         try {
-            if (! self::$enabled || self::$profiler !== null) {
+            if (! self::$enabled || self::$capture !== null) {
                 return;
             }
             if (self::$sampleRate <= 0.0 || ! self::shouldSample()) {
                 return;
             }
-            if (! ExcimerExporter::isAvailable()) {
+
+            $capture = ProfileIngestClient::instance()->beginCapture();
+            if ($capture === null) {
                 return;
             }
 
-            // Excimer-only branch: constants/classes here are never reached without the extension.
-            $profiler = new \ExcimerProfiler;
-            $profiler->setPeriod(self::$periodUs / 1_000_000);
-            $profiler->setEventType(self::$eventType === 'cpu' ? EXCIMER_CPU : EXCIMER_REAL);
-            $profiler->start();
-
-            self::$profiler = $profiler;
-            self::$startedAt = microtime(true);
+            self::$capture = $capture;
+            self::$startedAt = $capture->startedAt;
         } catch (\Throwable) {
-            self::$profiler = null;
+            self::$capture = null;
         }
     }
 
@@ -128,30 +124,28 @@ final class AutoProfiler
      */
     public static function finishAndSend(array $context = []): bool
     {
-        $profiler = self::$profiler;
-        if ($profiler === null) {
+        $capture = self::$capture;
+        if ($capture === null) {
             return false;
         }
-        self::$profiler = null;
+        self::$capture = null;
 
         try {
-            if (method_exists($profiler, 'stop')) {
-                $profiler->stop();
-            }
-
             $elapsedMs = (int) round((microtime(true) - self::$startedAt) * 1000);
             if (self::$minDurationMs > 0 && $elapsedMs < self::$minDurationMs) {
                 return false;
             }
 
-            $log = method_exists($profiler, 'getLog')
-                ? $profiler->getLog()
-                : (method_exists($profiler, 'flush') ? $profiler->flush() : null);
-            if (! is_object($log)) {
-                return false;
-            }
+            $merged = $context + self::tracerContext();
 
-            return self::buildAndSend($log, $context + self::tracerContext());
+            return ProfileIngestClient::instance()->finishCapture(
+                $capture,
+                is_string($merged['transaction'] ?? null) && $merged['transaction'] !== ''
+                    ? (string) $merged['transaction']
+                    : 'transaction',
+                [],
+                $merged,
+            );
         } catch (\Throwable) {
             return false;
         }
@@ -206,7 +200,7 @@ final class AutoProfiler
         self::$maxSamples = 10_000;
         self::$environment = null;
         self::$release = null;
-        self::$profiler = null;
+        self::$capture = null;
         self::$startedAt = 0.0;
         self::$forcedFraction = null;
     }

@@ -7,9 +7,10 @@ namespace Lookout\Tracing\Laravel;
 use Closure;
 use Illuminate\Http\Request;
 use Lookout\Tracing\Profiling\AutoProfiler;
+use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Tracer;
-use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 
 /**
  * Starts an {@code http.server} transaction when performance monitoring is enabled and no span is active.
@@ -18,8 +19,11 @@ use Symfony\Component\HttpFoundation\Response;
  */
 final class PerformanceMiddleware
 {
-    public function handle(Request $request, Closure $next): Response
+    public function handle(Request $request, Closure $next): SymfonyResponse
     {
+        if (IngestSelfMonitoring::shouldSkipMonitoring($request)) {
+            return $next($request);
+        }
         if (! Tracer::instance()->isPerformanceEnabled()) {
             return $next($request);
         }

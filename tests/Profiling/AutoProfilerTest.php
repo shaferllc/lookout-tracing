@@ -6,6 +6,7 @@ namespace Lookout\Tracing\Tests\Profiling;
 
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
+use Lookout\Tracing\Profiling\ProfileIngestClient;
 use PHPUnit\Framework\TestCase;
 
 final class AutoProfilerTest extends TestCase
@@ -15,12 +16,15 @@ final class AutoProfilerTest extends TestCase
         parent::setUp();
         AutoProfiler::resetForTesting();
         ProfileClient::resetForTesting();
+        ProfileIngestClient::resetForTesting();
+        ProfileIngestClient::configure(['manual_pulse_fallback' => false]);
     }
 
     protected function tearDown(): void
     {
         AutoProfiler::resetForTesting();
         ProfileClient::resetForTesting();
+        ProfileIngestClient::resetForTesting();
         parent::tearDown();
     }
 

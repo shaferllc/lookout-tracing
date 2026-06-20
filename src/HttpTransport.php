@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing;
 
+use Lookout\Tracing\Support\IngestSelfMonitoring;
+
 /**
  * Minimal JSON POST for trace ingest (no extra dependencies).
  */
@@ -18,11 +20,7 @@ final class HttpTransport
         $ctx = stream_context_create([
             'http' => [
                 'method' => 'POST',
-                'header' => implode("\r\n", [
-                    'Content-Type: application/json',
-                    'Accept: application/json',
-                    'X-Api-Key: '.$apiKey,
-                ]),
+                'header' => self::requestHeaders($url, $apiKey),
                 'content' => $json,
                 'timeout' => 5,
                 'ignore_errors' => true,
@@ -60,11 +58,7 @@ final class HttpTransport
         $ctx = stream_context_create([
             'http' => [
                 'method' => 'POST',
-                'header' => implode("\r\n", [
-                    'Content-Type: application/json',
-                    'Accept: application/json',
-                    'X-Api-Key: '.$apiKey,
-                ]),
+                'header' => self::requestHeaders($url, $apiKey),
                 'content' => $json,
                 'timeout' => 5,
                 'ignore_errors' => true,
@@ -123,5 +117,20 @@ final class HttpTransport
         }
 
         return $last;
+    }
+
+    /**
+     * @return non-empty-string
+     */
+    private static function requestHeaders(string $url, string $apiKey): string
+    {
+        $lines = [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'X-Api-Key: '.$apiKey,
+            ...IngestSelfMonitoring::internalIngestHeaderLines($url),
+        ];
+
+        return implode("\r\n", $lines);
     }
 }

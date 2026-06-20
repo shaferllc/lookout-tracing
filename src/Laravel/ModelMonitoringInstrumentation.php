@@ -7,6 +7,7 @@ namespace Lookout\Tracing\Laravel;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Eloquent\Model;
 use Lookout\Tracing\Model\Client as ModelChangeClient;
+use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Tracer;
 
 /**
@@ -21,6 +22,10 @@ final class ModelMonitoringInstrumentation
         }
 
         $events->listen('eloquent.*', static function (mixed $eventName, array $payload): void {
+            if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                return;
+            }
+
             if (! is_string($eventName) || ! str_starts_with($eventName, 'eloquent.')) {
                 return;
             }

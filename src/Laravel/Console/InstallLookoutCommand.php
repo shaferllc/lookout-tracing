@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
 use Lookout\Tracing\Laravel\Install\LookoutProvisionClient;
 use Lookout\Tracing\Support\LookoutDsn;
+use Lookout\Tracing\Support\MonitoringEnv;
 use Throwable;
 
 use function Laravel\Prompts\password;
@@ -273,7 +274,7 @@ final class InstallLookoutCommand extends Command
         File::append($envPath, $block);
         $this->components->info('Lookout variables were appended to .env.');
         if (! $this->option('no-quick')) {
-            $this->line('  • LOOKOUT_LARAVEL=true enables uncaught exception reporting and trace auto-flush defaults.');
+            $this->line('  • LOOKOUT_LARAVEL=true enables monitoring client toggles (see packages/lookout-tracing/src/Support/MonitoringEnv.php).');
         }
         $this->line('  • Optional: publish config with php artisan vendor:publish --tag=lookout-tracing-config');
 
@@ -332,7 +333,7 @@ final class InstallLookoutCommand extends Command
             'LOOKOUT_DSN="'.$escaped.'"',
         ];
         if ($includeLaravelQuick) {
-            $lines[] = 'LOOKOUT_LARAVEL=true';
+            $lines = array_merge($lines, MonitoringEnv::quickStartEnvLines());
         }
 
         return implode("\n", $lines)."\n";

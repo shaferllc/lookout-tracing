@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Lookout\Tracing\Performance\RateSampler;
 use Lookout\Tracing\Support\LookoutDsn;
+use Lookout\Tracing\Support\MonitoringEnv;
 
 $lookoutDsn = LookoutDsn::parse(trim((string) env('LOOKOUT_DSN', '')));
 
@@ -89,6 +90,8 @@ return [
 
     'model_ingest_path' => env('LOOKOUT_MODEL_INGEST_PATH', '/api/ingest/model'),
 
+    'gate_ingest_path' => env('LOOKOUT_GATE_INGEST_PATH', '/api/ingest/gate'),
+
     'profile_ingest_path' => '/api/ingest/profile',
 
     /*
@@ -105,12 +108,13 @@ return [
     |
     */
     'profiling' => [
-        'enabled' => (bool) env('LOOKOUT_PROFILING_ENABLED', false),
-        'sample_rate' => (float) env('LOOKOUT_PROFILING_SAMPLE_RATE', 0.0),
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_ENABLED'), false),
+        'sample_rate' => (float) env('LOOKOUT_PROFILING_SAMPLE_RATE', $laravelQuickStart ? 0.05 : 0.0),
         'period_us' => (int) env('LOOKOUT_PROFILING_PERIOD_US', 10000),
         'event_type' => env('LOOKOUT_PROFILING_EVENT_TYPE', 'wall'),
         'min_duration_ms' => (int) env('LOOKOUT_PROFILING_MIN_DURATION_MS', 0),
         'max_samples' => (int) env('LOOKOUT_PROFILING_MAX_SAMPLES', 10000),
+        'manual_pulse_fallback' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_MANUAL_PULSE_FALLBACK'), $laravelQuickStart),
     ],
 
     'log_ingest_path' => env('LOOKOUT_LOG_INGEST_PATH', '/api/ingest/log'),
@@ -126,12 +130,30 @@ return [
     |
     */
     'logging' => [
-        'enabled' => (bool) env('LOOKOUT_LOGS_ENABLED', false),
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_LOGS_ENABLED'), $laravelQuickStart),
         'flush_on_terminate' => (bool) env('LOOKOUT_LOGS_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_LOGS_MAX_BUFFER', 50),
     ],
 
     'metric_ingest_path' => env('LOOKOUT_METRIC_INGEST_PATH', '/api/ingest/metric'),
+
+    'rum_ingest_path' => env('LOOKOUT_RUM_INGEST_PATH', '/api/ingest/rum'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Browser Real User Monitoring (POST /api/ingest/rum)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, {@see Lookout\Tracing\Laravel\RumScript} injects lookout-rum.js
+    | into Blade layouts. Requires performance.enabled (same server gate as traces).
+    | Defaults on with LOOKOUT_LARAVEL=true when API key and base URI resolve.
+    |
+    */
+    'rum' => [
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_RUM_ENABLED'), $laravelQuickStart),
+        'ingest_path' => env('LOOKOUT_RUM_INGEST_PATH', '/api/ingest/rum'),
+        'livewire_navigate' => filter_var(env('LOOKOUT_RUM_LIVEWIRE_NAVIGATE', true), FILTER_VALIDATE_BOOLEAN),
+    ],
 
     /*
     |--------------------------------------------------------------------------
@@ -143,7 +165,7 @@ return [
     |
     */
     'metrics' => [
-        'enabled' => (bool) env('LOOKOUT_METRICS_ENABLED', false),
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_METRICS_ENABLED'), $laravelQuickStart),
         'flush_on_terminate' => (bool) env('LOOKOUT_METRICS_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_METRICS_MAX_BUFFER', 500),
     ],
@@ -159,9 +181,7 @@ return [
     |
     */
     'job_monitoring' => [
-        'enabled' => env('LOOKOUT_JOB_MONITORING_ENABLED') !== null
-            ? filter_var(env('LOOKOUT_JOB_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
-            : $laravelQuickStart,
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_JOB_MONITORING_ENABLED'), $laravelQuickStart),
     ],
 
     /*
@@ -174,9 +194,7 @@ return [
     |
     */
     'mail_monitoring' => [
-        'enabled' => env('LOOKOUT_MAIL_MONITORING_ENABLED') !== null
-            ? filter_var(env('LOOKOUT_MAIL_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
-            : $laravelQuickStart,
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_MAIL_MONITORING_ENABLED'), $laravelQuickStart),
     ],
 
     /*
@@ -190,9 +208,7 @@ return [
     |
     */
     'event_monitoring' => [
-        'enabled' => env('LOOKOUT_EVENT_MONITORING_ENABLED') !== null
-            ? filter_var(env('LOOKOUT_EVENT_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
-            : $laravelQuickStart,
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_EVENT_MONITORING_ENABLED'), $laravelQuickStart),
         'wildcard' => (bool) env('LOOKOUT_EVENT_MONITORING_WILDCARD', false),
         'allowlist' => [],
         'ignore_prefixes' => ['Illuminate\\', 'Laravel\\', 'Livewire\\'],
@@ -211,9 +227,20 @@ return [
     |
     */
     'notification_monitoring' => [
-        'enabled' => env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED') !== null
-            ? filter_var(env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
-            : $laravelQuickStart,
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED'), $laravelQuickStart),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cron / schedule check-ins (POST /api/ingest/cron)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, {@see Lookout\Tracing\Cron\Client} sends monitor check-ins.
+    | Defaults on with LOOKOUT_LARAVEL=true. No server-side project gate (always accepted when keyed).
+    |
+    */
+    'cron_monitoring' => [
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_CRON_MONITORING_ENABLED'), $laravelQuickStart),
     ],
 
     /*
@@ -227,15 +254,31 @@ return [
     |
     */
     'model_monitoring' => [
-        'enabled' => env('LOOKOUT_MODEL_MONITORING_ENABLED') !== null
-            ? filter_var(env('LOOKOUT_MODEL_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
-            : $laravelQuickStart,
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_MODEL_MONITORING_ENABLED'), $laravelQuickStart),
         'namespace_prefix' => env('LOOKOUT_MODEL_MONITORING_NAMESPACE', 'App\\'),
         'allowlist' => [],
         'ignore_prefixes' => ['Illuminate\\', 'Laravel\\', 'Livewire\\'],
         'ignore_change_attributes' => ['updated_at', 'created_at'],
         'flush_on_terminate' => (bool) env('LOOKOUT_MODEL_MONITORING_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_MODEL_MONITORING_MAX_BUFFER', 200),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization gate monitoring (POST /api/ingest/gate)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel buffers authorization gate/policy evaluations (GateEvaluated):
+    | ability, allow/deny result, the target type, and the acting user id only (no names/values).
+    | Defaults on with LOOKOUT_LARAVEL=true. Respects project gate_ingest_enabled on the server.
+    |
+    */
+    'gate_monitoring' => [
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_GATE_MONITORING_ENABLED'), $laravelQuickStart),
+        'allowlist' => [],
+        'ignore_abilities' => [],
+        'flush_on_terminate' => (bool) env('LOOKOUT_GATE_MONITORING_FLUSH_ON_TERMINATE', true),
+        'max_buffer' => (int) env('LOOKOUT_GATE_MONITORING_MAX_BUFFER', 200),
     ],
 
     /*
@@ -467,7 +510,7 @@ return [
     |
     */
     'performance' => [
-        'enabled' => env('LOOKOUT_PERFORMANCE_ENABLED', false),
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PERFORMANCE_ENABLED'), $laravelQuickStart),
 
         /*
          * When true, log a warning if trace flush returns HTTP 403 (project disabled performance ingest).
@@ -485,7 +528,7 @@ return [
             'project_id' => env('LOOKOUT_SYNC_PROJECT_ID'),
         ],
 
-        'middleware_auto_register' => env('LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE', false),
+        'middleware_auto_register' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE'), $laravelQuickStart),
 
         /*
          * Flush trace to Lookout after each Artisan command or queue job (in addition to HTTP auto_flush).
@@ -570,6 +613,20 @@ return [
             'enabled' => env('LOOKOUT_PERFORMANCE_QUERY_INSIGHTS', true),
             'n_plus_one_min_repeat' => (int) env('LOOKOUT_PERFORMANCE_N_PLUS_ONE_MIN_REPEAT', 4),
             'n_plus_one_min_queries' => (int) env('LOOKOUT_PERFORMANCE_N_PLUS_ONE_MIN_QUERIES', 8),
+        ],
+
+        /*
+         * Extra request/response attributes attached to the http.server root span. PII-bearing
+         * fields (client_ip, user_id) are opt-in. query_string is truncated to 512 chars; when
+         * a route is matched, http.route is recorded for stable per-endpoint grouping. Outbound
+         * call rollups (http.client.count / http.client.time_ms) follow the http_client collector.
+         */
+        'request_metadata' => [
+            'query_string' => env('LOOKOUT_PERFORMANCE_CAPTURE_QUERY_STRING', true),
+            'user_agent' => env('LOOKOUT_PERFORMANCE_CAPTURE_USER_AGENT', true),
+            'response_size' => env('LOOKOUT_PERFORMANCE_CAPTURE_RESPONSE_SIZE', true),
+            'client_ip' => env('LOOKOUT_PERFORMANCE_CAPTURE_CLIENT_IP', false),
+            'user_id' => env('LOOKOUT_PERFORMANCE_CAPTURE_USER_ID', false),
         ],
     ],
 ];

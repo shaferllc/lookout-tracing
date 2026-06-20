@@ -9,7 +9,7 @@ use Lookout\Tracing\Tracer;
 
 /**
  * Buffered custom metrics to {@code POST /api/ingest/metric}: {@code count}, {@code gauge},
- * {@code distribution}, {@code flush()}.
+ * {@code distribution}, {@code start()}/{@code stop()} timers, fluent {@code metric()} builder, and {@code flush()}.
  *
  * Lookout stores each sample (with optional {@code trace_id} from the active tracer) so you can
  * correlate spikes with traces and issues in the same project.
@@ -62,7 +62,14 @@ final class MetricsIngestClient
      */
     public function count(string $name, float $delta = 1.0, array $attributes = [], ?string $unit = null): void
     {
-        $this->enqueue('counter', $name, $delta, $attributes, $unit);
+        $this->recordSample('counter', $name, $delta, [
+            'attributes' => $attributes,
+            'unit' => $unit,
+            'trace_id' => null,
+            'timestamp' => null,
+            'environment' => null,
+            'release' => null,
+        ]);
     }
 
     /**
@@ -70,7 +77,14 @@ final class MetricsIngestClient
      */
     public function gauge(string $name, float $value, array $attributes = [], ?string $unit = null): void
     {
-        $this->enqueue('gauge', $name, $value, $attributes, $unit);
+        $this->recordSample('gauge', $name, $value, [
+            'attributes' => $attributes,
+            'unit' => $unit,
+            'trace_id' => null,
+            'timestamp' => null,
+            'environment' => null,
+            'release' => null,
+        ]);
     }
 
     /**
@@ -78,7 +92,116 @@ final class MetricsIngestClient
      */
     public function distribution(string $name, float $value, array $attributes = [], ?string $unit = null): void
     {
-        $this->enqueue('distribution', $name, $value, $attributes, $unit);
+        $this->recordSample('distribution', $name, $value, [
+            'attributes' => $attributes,
+            'unit' => $unit,
+            'trace_id' => null,
+            'timestamp' => null,
+            'environment' => null,
+            'release' => null,
+        ]);
+    }
+
+    /**
+     * Fluent builder for one sample with attributes, unit, trace_id, timestamp, environment, and release.
+     */
+    public function metric(string $name): MetricBuilder
+    {
+        return new MetricBuilder($this, $name);
+    }
+
+    /**
+     * Start a wall-clock timer. Call {@see MetricTimer::stop()} to record duration as a distribution.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function start(string $name, array $attributes = [], ?string $unit = null): MetricTimer
+    {
+        $builder = $this->metric($name)->attributes($attributes);
+        if ($unit !== null) {
+            $builder->unit($unit);
+        }
+
+        return $builder->start();
+    }
+
+    /**
+     * Run a callback and record its wall-clock duration as a distribution sample.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @param  array<string, mixed>  $attributes
+     * @return T
+     */
+    public function time(string $name, callable $callback, array $attributes = [], ?string $unit = null): mixed
+    {
+        $timer = $this->start($name, $attributes, $unit);
+        try {
+            return $callback();
+        } finally {
+            if (! $timer->isFinished()) {
+                $timer->stop();
+            }
+        }
+    }
+
+    /**
+     * @param  array{
+     *     attributes?: array<string, mixed>,
+     *     unit?: ?string,
+     *     trace_id?: ?string,
+     *     timestamp?: int|float|string|null,
+     *     environment?: ?string,
+     *     release?: ?string,
+     * }  $context
+     */
+    public function recordSample(string $kind, string $name, float $value, array $context = []): void
+    {
+        if (! $this->isEnabled()) {
+            return;
+        }
+        if (! is_finite($value)) {
+            return;
+        }
+
+        $attributes = $context['attributes'] ?? [];
+        if (! is_array($attributes)) {
+            $attributes = [];
+        }
+
+        $row = [
+            'name' => $name,
+            'kind' => $kind,
+            'value' => $value,
+        ];
+
+        $unit = $context['unit'] ?? null;
+        if (is_string($unit) && $unit !== '') {
+            $row['unit'] = $unit;
+        }
+        if ($attributes !== []) {
+            $row['attributes'] = $attributes;
+        }
+
+        foreach (['trace_id', 'environment', 'release'] as $key) {
+            $v = $context[$key] ?? null;
+            if (is_string($v) && $v !== '') {
+                $row[$key] = $v;
+            }
+        }
+
+        $timestamp = $context['timestamp'] ?? null;
+        if ($timestamp !== null && $timestamp !== '') {
+            $row['timestamp'] = $timestamp;
+        }
+
+        $filtered = $this->applyBeforeSend($this->applyDefaults($row));
+        if ($filtered === null) {
+            return;
+        }
+        $this->buffer[] = $filtered;
+        $this->maybeAutoFlush();
     }
 
     /**
@@ -132,36 +255,6 @@ final class MetricsIngestClient
         }
 
         return $ok;
-    }
-
-    /**
-     * @param  array<string, mixed>  $attributes
-     */
-    private function enqueue(string $kind, string $name, float $value, array $attributes, ?string $unit): void
-    {
-        if (! $this->isEnabled()) {
-            return;
-        }
-        if (! is_finite($value)) {
-            return;
-        }
-        $row = [
-            'name' => $name,
-            'kind' => $kind,
-            'value' => $value,
-        ];
-        if ($unit !== null && $unit !== '') {
-            $row['unit'] = $unit;
-        }
-        if ($attributes !== []) {
-            $row['attributes'] = $attributes;
-        }
-        $filtered = $this->applyBeforeSend($this->applyDefaults($row));
-        if ($filtered === null) {
-            return;
-        }
-        $this->buffer[] = $filtered;
-        $this->maybeAutoFlush();
     }
 
     /**

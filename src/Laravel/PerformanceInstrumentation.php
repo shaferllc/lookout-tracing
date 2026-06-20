@@ -26,6 +26,7 @@ use Illuminate\Http\Client\Events\ConnectionFailed;
 use Illuminate\Http\Client\Events\RequestSending;
 use Illuminate\Http\Client\Events\ResponseReceived;
 use Illuminate\Http\Client\Request as HttpClientRequest;
+use Illuminate\Http\Request;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Queue\Events\JobAttempted;
 use Illuminate\Queue\Events\JobProcessing;
@@ -34,11 +35,13 @@ use Illuminate\Support\Facades\Redis;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Span;
 use Lookout\Tracing\SpanOperation;
+use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Support\SqlFingerprint;
 use Lookout\Tracing\TracePropagationHeader;
 use Lookout\Tracing\Tracer;
 use Lookout\Tracing\TraceWireHeaders;
+use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 use Throwable;
 use WeakMap;
 
@@ -91,6 +94,10 @@ final class PerformanceInstrumentation
     private static int $cacheManyGetBatches = 0;
 
     private static int $cacheManyPutBatches = 0;
+
+    private static int $httpClientCount = 0;
+
+    private static float $httpClientDurationMs = 0.0;
 
     public static function register(Dispatcher $events): void
     {
@@ -153,6 +160,8 @@ final class PerformanceInstrumentation
         self::$cacheInsightForgets = 0;
         self::$cacheManyGetBatches = 0;
         self::$cacheManyPutBatches = 0;
+        self::$httpClientCount = 0;
+        self::$httpClientDurationMs = 0.0;
     }
 
     public static function registerRedisPerformanceListener(): void
@@ -661,6 +670,8 @@ final class PerformanceInstrumentation
         if ($code >= 500) {
             $span->setStatus('internal_error');
         }
+        self::$httpClientCount++;
+        self::$httpClientDurationMs += max(0.0, (microtime(true) - $span->startUnix()) * 1000);
         $span->finish();
     }
 
@@ -680,6 +691,8 @@ final class PerformanceInstrumentation
         self::httpClientSpanMap()->offsetUnset($req);
         $span->setStatus('internal_error');
         $span->setData(['error' => $event->exception->getMessage()]);
+        self::$httpClientCount++;
+        self::$httpClientDurationMs += max(0.0, (microtime(true) - $span->startUnix()) * 1000);
         $span->finish();
     }
 
@@ -696,9 +709,103 @@ final class PerformanceInstrumentation
         if (! self::performanceEnabled()) {
             return;
         }
-        self::attachTransactionInsights();
-        AutoProfiler::finishAndSend();
-        Tracer::instance()->finishAutoHttpServerTransaction($event->response->getStatusCode());
+        if (IngestSelfMonitoring::shouldSkipMonitoring($event->request)) {
+            return;
+        }
+
+        try {
+            self::attachTransactionInsights();
+            self::attachHttpRequestMetadata($event->request, $event->response);
+            AutoProfiler::finishAndSend();
+            Tracer::instance()->finishAutoHttpServerTransaction($event->response->getStatusCode());
+        } catch (Throwable) {
+            // Never break the host response lifecycle for monitoring hooks.
+        }
+    }
+
+    /**
+     * Attach request/response metadata to the root http.server span. PII-bearing fields
+     * (client IP, user id) are opt-in via config('lookout-tracing.performance.request_metadata').
+     */
+    private static function attachHttpRequestMetadata(Request $request, SymfonyResponse $response): void
+    {
+        $span = Tracer::instance()->getCurrentSpan();
+        if ($span === null || $span->isFinished() || $span->op !== SpanOperation::HTTP_SERVER) {
+            return;
+        }
+
+        $perf = config('lookout-tracing.performance');
+        $meta = is_array($perf) && is_array($perf['request_metadata'] ?? null) ? $perf['request_metadata'] : [];
+        $data = [];
+
+        $route = $request->route();
+        if ($route !== null && is_string($route->uri()) && $route->uri() !== '') {
+            $data['http.route'] = '/'.ltrim($route->uri(), '/');
+        }
+
+        if (($meta['query_string'] ?? true) && ($query = (string) $request->getQueryString()) !== '') {
+            $data['http.request.query'] = substr($query, 0, 512);
+        }
+
+        if ($meta['user_agent'] ?? true) {
+            $agent = (string) ($request->userAgent() ?? '');
+            if ($agent !== '') {
+                $data['http.user_agent'] = substr($agent, 0, 512);
+            }
+        }
+
+        if ($meta['client_ip'] ?? false) {
+            $ip = (string) ($request->ip() ?? '');
+            if ($ip !== '') {
+                $data['http.client_ip'] = $ip;
+            }
+        }
+
+        if ($meta['user_id'] ?? false) {
+            $userId = self::authenticatedUserId();
+            if ($userId !== null) {
+                $data['http.user_id'] = $userId;
+            }
+        }
+
+        if ($meta['response_size'] ?? true) {
+            $bytes = self::responseSize($response);
+            if ($bytes !== null) {
+                $data['http.response.body.size'] = $bytes;
+            }
+        }
+
+        if ($data !== []) {
+            $span->setData($data);
+        }
+    }
+
+    private static function authenticatedUserId(): ?string
+    {
+        try {
+            $id = auth()->id();
+        } catch (Throwable) {
+            return null;
+        }
+        if (is_int($id) || (is_string($id) && $id !== '')) {
+            return (string) $id;
+        }
+
+        return null;
+    }
+
+    private static function responseSize(SymfonyResponse $response): ?int
+    {
+        $header = $response->headers->get('Content-Length');
+        if (is_numeric($header)) {
+            return (int) $header;
+        }
+        $content = $response->getContent();
+        if (is_string($content) && $content !== '') {
+            return strlen($content);
+        }
+
+        return null;
     }
 
     public static function onCommandStarting(CommandStarting $event): void
@@ -932,6 +1039,23 @@ final class PerformanceInstrumentation
         self::attachTransactionInsights();
     }
 
+    /**
+     * @internal
+     */
+    public static function applyHttpRequestMetadataForTesting(Request $request, SymfonyResponse $response): void
+    {
+        self::attachHttpRequestMetadata($request, $response);
+    }
+
+    /**
+     * @internal
+     */
+    public static function recordHttpClientCallForTesting(float $durationMs): void
+    {
+        self::$httpClientCount++;
+        self::$httpClientDurationMs += max(0.0, $durationMs);
+    }
+
     public static function onQueryExecuted(QueryExecuted $event): void
     {
         if (! self::performanceEnabled() || ! self::collector('database')) {
@@ -1073,6 +1197,11 @@ final class PerformanceInstrumentation
                     $data['cache.hit_ratio'] = round(self::$cacheInsightHits / $looked, 4);
                 }
             }
+        }
+
+        if (self::collector('http_client') && self::$httpClientCount > 0) {
+            $data['http.client.count'] = self::$httpClientCount;
+            $data['http.client.time_ms'] = round(self::$httpClientDurationMs, 3);
         }
 
         if (in_array($span->op, [SpanOperation::HTTP_SERVER, SpanOperation::CONSOLE_COMMAND, SpanOperation::QUEUE_PROCESS], true)) {

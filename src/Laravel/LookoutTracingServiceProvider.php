@@ -10,9 +10,11 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Foundation\Exceptions\Handler as FoundationExceptionHandler;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Lookout\Tracing\Cron\Client as CronClient;
 use Lookout\Tracing\DomainEvent\Client as DomainEventClient;
+use Lookout\Tracing\Gate\Client as GateClient;
 use Lookout\Tracing\Job\Client as JobIngestClient;
 use Lookout\Tracing\Laravel\Console\InstallLookoutCommand;
 use Lookout\Tracing\Logging\LogIngestClient;
@@ -22,8 +24,10 @@ use Lookout\Tracing\Model\Client as ModelChangeClient;
 use Lookout\Tracing\Notification\Client as NotificationClient;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
+use Lookout\Tracing\Profiling\ProfileIngestClient;
 use Lookout\Tracing\Reporting\ErrorReportClient;
 use Lookout\Tracing\Support\DeploymentDefaults;
+use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Support\LookoutManagementApi;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Tracer;
@@ -47,6 +51,8 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             __DIR__.'/config/lookout-tracing.php' => config_path('lookout-tracing.php'),
         ], 'lookout-tracing-config');
 
+        $this->loadViewsFrom(dirname(__DIR__, 2).'/resources/views', 'lookout-tracing');
+
         /** @var Router $router */
         $router = $this->app->make(Router::class);
         $router->aliasMiddleware('lookoutTracing.continueTrace', ContinueTraceMiddleware::class);
@@ -61,6 +67,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->configureMailClientFromConfig();
         $this->configureNotificationClientFromConfig();
         $this->configureModelChangeClientFromConfig();
+        $this->configureGateClientFromConfig();
         $this->configureDomainEventClientFromConfig();
         $this->configureProfileClientFromConfig();
         $this->configureAutoProfilerFromConfig();
@@ -78,7 +85,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         if (config('lookout-tracing.auto_flush', false)) {
             /** @var Application $app */
             $app = $this->app;
-            $app->terminating(static function () {
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
                 TraceIngestFlushReporter::flushWithReporting();
             });
         }
@@ -87,7 +97,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         if (is_array($logCfg) && ! empty($logCfg['enabled']) && ! empty($logCfg['flush_on_terminate'])) {
             /** @var Application $app */
             $app = $this->app;
-            $app->terminating(static function () {
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
                 \lookout_logger()->flush();
             });
         }
@@ -96,7 +109,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         if (is_array($metricCfg) && ! empty($metricCfg['enabled']) && ! empty($metricCfg['flush_on_terminate'])) {
             /** @var Application $app */
             $app = $this->app;
-            $app->terminating(static function () {
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
                 \lookout_metrics()->flush();
             });
         }
@@ -105,7 +121,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         if (is_array($eventCfg) && ! empty($eventCfg['enabled']) && ! empty($eventCfg['flush_on_terminate'])) {
             /** @var Application $app */
             $app = $this->app;
-            $app->terminating(static function () {
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
                 DomainEventClient::instance()->flush();
             });
         }
@@ -114,12 +133,47 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         if (is_array($modelCfg) && ! empty($modelCfg['enabled']) && ! empty($modelCfg['flush_on_terminate'])) {
             /** @var Application $app */
             $app = $this->app;
-            $app->terminating(static function () {
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
                 ModelChangeClient::instance()->flush();
             });
         }
 
+        $gateCfg = config('lookout-tracing.gate_monitoring');
+        if (is_array($gateCfg) && ! empty($gateCfg['enabled']) && ! empty($gateCfg['flush_on_terminate'])) {
+            /** @var Application $app */
+            $app = $this->app;
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
+                GateClient::instance()->flush();
+            });
+        }
+
         $this->registerPerformanceMiddlewareGroups($router);
+        $this->registerRumAssetRoute();
+    }
+
+    protected function registerRumAssetRoute(): void
+    {
+        if ($this->app->routesAreCached()) {
+            return;
+        }
+
+        Route::get('/assets/lookout-rum.js', static function () {
+            $path = RumScript::scriptPath();
+            if (! is_file($path)) {
+                abort(404);
+            }
+
+            return response()->file($path, [
+                'Content-Type' => 'application/javascript; charset=UTF-8',
+                'Cache-Control' => 'public, max-age=3600',
+            ]);
+        })->name('lookout.rum.script');
     }
 
     protected function registerPerformanceMiddlewareGroups(Router $router): void
@@ -304,7 +358,9 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         }
 
         $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $cronCfg = is_array($cfg['cron_monitoring'] ?? null) ? $cfg['cron_monitoring'] : [];
         CronClient::configure([
+            'enabled' => (bool) ($cronCfg['enabled'] ?? false),
             'api_key' => $cfg['api_key'] ?? null,
             'base_uri' => $base !== '' ? $base : null,
             'cron_ingest_path' => $cfg['cron_ingest_path'] ?? '/api/ingest/cron',
@@ -391,6 +447,29 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         ]);
     }
 
+    protected function configureGateClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $gateCfg = is_array($cfg['gate_monitoring'] ?? null) ? $cfg['gate_monitoring'] : [];
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['gate_ingest_path']) && is_string($cfg['gate_ingest_path']) ? $cfg['gate_ingest_path'] : '/api/ingest/gate';
+        $path = '/'.ltrim(trim($path), '/');
+
+        GateClient::configure([
+            'enabled' => (bool) ($gateCfg['enabled'] ?? false),
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'gate_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+            'max_buffer' => (int) ($gateCfg['max_buffer'] ?? 200),
+        ]);
+    }
+
     protected function configureDomainEventClientFromConfig(): void
     {
         $cfg = config('lookout-tracing');
@@ -422,6 +501,26 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         }
 
         $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $p = is_array($cfg['profiling'] ?? null) ? $cfg['profiling'] : [];
+
+        $autoDeploy = DeploymentDefaults::fromEnvironment();
+        $releaseCfg = isset($cfg['release']) && is_string($cfg['release']) ? trim($cfg['release']) : '';
+        if ($releaseCfg === '') {
+            $releaseCfg = is_string($autoDeploy['release'] ?? null) ? trim($autoDeploy['release']) : '';
+        }
+
+        ProfileIngestClient::configure([
+            'enabled' => (bool) ($p['enabled'] ?? false),
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'profile_ingest_path' => $cfg['profile_ingest_path'] ?? '/api/ingest/profile',
+            'period_us' => (int) ($p['period_us'] ?? 10000),
+            'event_type' => is_string($p['event_type'] ?? null) ? $p['event_type'] : 'wall',
+            'manual_pulse_fallback' => (bool) ($p['manual_pulse_fallback'] ?? true),
+            'environment' => is_string($cfg['environment'] ?? null) ? $cfg['environment'] : null,
+            'release' => $releaseCfg !== '' ? $releaseCfg : null,
+        ]);
+
         ProfileClient::configure([
             'api_key' => $cfg['api_key'] ?? null,
             'base_uri' => $base !== '' ? $base : null,
@@ -513,6 +612,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         MailMonitoringInstrumentation::register($events);
         NotificationMonitoringInstrumentation::register($events);
         ModelMonitoringInstrumentation::register($events);
+        GateMonitoringInstrumentation::register($events);
         DomainEventMonitoringInstrumentation::register($events);
     }
 

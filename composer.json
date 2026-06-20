@@ -34,6 +34,7 @@
         "files": [
             "src/logging.php",
             "src/metrics.php",
+            "src/profiling.php",
             "src/feedback.php"
         ]
     },
