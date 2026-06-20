@@ -1258,7 +1258,10 @@ final class PerformanceInstrumentation
         }
 
         $attach = static function (ViewFactory $factory): void {
-            $factory->composer('*', [self::class, 'onViewComposing']);
+            // Must be a Closure: View@composer drops [class, method] callable arrays silently.
+            $factory->composer('*', static function (View $view): void {
+                self::onViewComposing($view);
+            });
         };
 
         if ($app->resolved('view')) {
