@@ -81,6 +81,28 @@ return [
 
     'profile_ingest_path' => '/api/ingest/profile',
 
+    /*
+    |--------------------------------------------------------------------------
+    | Automatic profiling (Excimer)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled AND the Excimer PECL extension is installed, a sampled fraction of
+    | transactions (web requests, console commands, queue jobs) are CPU/wall profiled and
+    | POSTed to /api/ingest/profile automatically — no ProfileClient::sendProfile() calls.
+    | Without Excimer this is a silent no-op. Profiling rides on performance instrumentation,
+    | so keep performance.enabled = true. Each uploaded profile counts toward your event quota,
+    | so keep sample_rate low in production. event_type: 'wall' (default) or 'cpu'.
+    |
+    */
+    'profiling' => [
+        'enabled' => (bool) env('LOOKOUT_PROFILING_ENABLED', false),
+        'sample_rate' => (float) env('LOOKOUT_PROFILING_SAMPLE_RATE', 0.0),
+        'period_us' => (int) env('LOOKOUT_PROFILING_PERIOD_US', 10000),
+        'event_type' => env('LOOKOUT_PROFILING_EVENT_TYPE', 'wall'),
+        'min_duration_ms' => (int) env('LOOKOUT_PROFILING_MIN_DURATION_MS', 0),
+        'max_samples' => (int) env('LOOKOUT_PROFILING_MAX_SAMPLES', 10000),
+    ],
+
     'log_ingest_path' => env('LOOKOUT_LOG_INGEST_PATH', '/api/ingest/log'),
 
     /*

@@ -31,6 +31,7 @@ use Illuminate\Queue\Events\JobAttempted;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Support\Facades\Redis;
+use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Span;
 use Lookout\Tracing\SpanOperation;
 use Lookout\Tracing\Support\MemoryPeakReset;
@@ -690,6 +691,7 @@ final class PerformanceInstrumentation
             return;
         }
         self::attachTransactionInsights();
+        AutoProfiler::finishAndSend();
         Tracer::instance()->finishAutoHttpServerTransaction($event->response->getStatusCode());
     }
 
@@ -703,6 +705,7 @@ final class PerformanceInstrumentation
         Tracer::instance()->continueTrace(null, null);
         $name = 'artisan '.$event->command;
         Tracer::instance()->startAutoConsoleTransaction($name);
+        AutoProfiler::maybeStart();
     }
 
     public static function onCommandFinished(CommandFinished $event): void
@@ -715,6 +718,7 @@ final class PerformanceInstrumentation
         if ($span !== null && ! $span->isFinished()) {
             $span->setData(['exit_code' => $event->exitCode]);
         }
+        AutoProfiler::finishAndSend();
         Tracer::instance()->finishAutoConsoleTransaction();
         self::maybeFlush();
     }
@@ -740,6 +744,7 @@ final class PerformanceInstrumentation
 
         $name = self::resolveJobName($event->job);
         $tracer->startAutoQueueTransaction($name);
+        AutoProfiler::maybeStart();
         $span = $tracer->getCurrentSpan();
         if ($span !== null) {
             $maxTries = $payload['maxTries'] ?? null;
@@ -798,6 +803,7 @@ final class PerformanceInstrumentation
                 $span->setData(['queue.failed_permanently' => true]);
             }
         }
+        AutoProfiler::finishAndSend();
         $tracer->finishAutoQueueTransaction();
         $tracer->restoreAfterQueueJobAttempt();
         self::maybeFlush();

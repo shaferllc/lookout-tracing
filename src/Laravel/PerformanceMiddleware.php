@@ -6,6 +6,7 @@ namespace Lookout\Tracing\Laravel;
 
 use Closure;
 use Illuminate\Http\Request;
+use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Tracer;
 use Symfony\Component\HttpFoundation\Response;
@@ -35,6 +36,7 @@ final class PerformanceMiddleware
         PerformanceInstrumentation::resetHttpRequestCounters();
         MemoryPeakReset::beforeUnitOfWork();
         Tracer::instance()->startAutoHttpServerTransaction($name);
+        AutoProfiler::maybeStart();
 
         return $next($request);
     }

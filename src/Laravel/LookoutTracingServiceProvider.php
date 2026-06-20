@@ -15,6 +15,7 @@ use Lookout\Tracing\Cron\Client as CronClient;
 use Lookout\Tracing\Laravel\Console\InstallLookoutCommand;
 use Lookout\Tracing\Logging\LogIngestClient;
 use Lookout\Tracing\Metrics\MetricsIngestClient;
+use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
 use Lookout\Tracing\Reporting\ErrorReportClient;
 use Lookout\Tracing\Support\DeploymentDefaults;
@@ -52,6 +53,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->overridePerformanceEnabledFromManagementApi();
         $this->configureCronClientFromConfig();
         $this->configureProfileClientFromConfig();
+        $this->configureAutoProfilerFromConfig();
         $this->configureErrorReportClient();
 
         $this->applyComprehensiveCollectionConfiguration();
@@ -293,6 +295,33 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             'api_key' => $cfg['api_key'] ?? null,
             'base_uri' => $base !== '' ? $base : null,
             'profile_ingest_path' => $cfg['profile_ingest_path'] ?? '/api/ingest/profile',
+        ]);
+    }
+
+    protected function configureAutoProfilerFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $p = is_array($cfg['profiling'] ?? null) ? $cfg['profiling'] : [];
+
+        $autoDeploy = DeploymentDefaults::fromEnvironment();
+        $releaseCfg = isset($cfg['release']) && is_string($cfg['release']) ? trim($cfg['release']) : '';
+        if ($releaseCfg === '') {
+            $releaseCfg = is_string($autoDeploy['release'] ?? null) ? trim($autoDeploy['release']) : '';
+        }
+
+        AutoProfiler::configure([
+            'enabled' => (bool) ($p['enabled'] ?? false),
+            'sample_rate' => (float) ($p['sample_rate'] ?? 0.0),
+            'period_us' => (int) ($p['period_us'] ?? 10000),
+            'event_type' => is_string($p['event_type'] ?? null) ? $p['event_type'] : 'wall',
+            'min_duration_ms' => (int) ($p['min_duration_ms'] ?? 0),
+            'max_samples' => (int) ($p['max_samples'] ?? 10000),
+            'environment' => is_string($cfg['environment'] ?? null) ? $cfg['environment'] : null,
+            'release' => $releaseCfg !== '' ? $releaseCfg : null,
         ]);
     }
 

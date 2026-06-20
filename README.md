@@ -244,6 +244,27 @@ Laravel: the same service provider configures `CronClient` from `config/lookout-
 
 ## Profiling (CPU / flame graphs)
 
+### Automatic (Laravel + Excimer) — zero code
+
+If the **Excimer** PECL extension is installed, turn on auto-profiling and the package captures a
+sampled fraction of web requests, console commands, and queue jobs and uploads them for you — no
+`ProfileClient::sendProfile()` calls. Without Excimer this is a silent no-op (use the manual paths below),
+and it never throws into your app.
+
+```env
+LOOKOUT_PROFILING_ENABLED=true
+LOOKOUT_PROFILING_SAMPLE_RATE=0.05   # 5% of transactions (keep low — each profile counts toward your event quota)
+LOOKOUT_PROFILING_PERIOD_US=10000    # sample period in microseconds (10ms)
+LOOKOUT_PROFILING_EVENT_TYPE=wall    # 'wall' (default) or 'cpu'
+LOOKOUT_PROFILING_MIN_DURATION_MS=0  # only upload transactions at least this slow
+```
+
+Auto-profiling rides on performance instrumentation, so keep `performance.enabled = true`. `trace_id`,
+`transaction`, `environment`, and `release` are attached automatically so profiles cross-link from traces
+and errors. For non-Laravel apps or when Excimer is unavailable, capture manually:
+
+### Manual capture
+
 Capture with **Excimer** (speedscope JSON), **xhprof** / **Tideways**, **SPX**, or cooperative **`php.manual_pulse`** sampling (no extension), then POST to Lookout.
 
 ```php
