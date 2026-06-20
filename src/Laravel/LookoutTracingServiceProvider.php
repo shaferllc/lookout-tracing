@@ -404,10 +404,6 @@ final class LookoutTracingServiceProvider extends ServiceProvider
 
     protected function registerHttpNotFoundReporting(): void
     {
-        if (! HttpNotFoundReporter::enabled()) {
-            return;
-        }
-
         /** @var Dispatcher $events */
         $events = $this->app->make(Dispatcher::class);
         HttpNotFoundReporter::register($events);

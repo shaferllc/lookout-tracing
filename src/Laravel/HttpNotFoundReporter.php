@@ -18,10 +18,6 @@ final class HttpNotFoundReporter
 {
     public static function register(Dispatcher $events): void
     {
-        if (! self::enabled()) {
-            return;
-        }
-
         $events->listen(RequestHandled::class, [self::class, 'onRequestHandled']);
     }
 
@@ -41,6 +37,10 @@ final class HttpNotFoundReporter
 
     public static function onRequestHandled(RequestHandled $event): void
     {
+        if (! self::enabled()) {
+            return;
+        }
+
         if ($event->response->getStatusCode() !== 404) {
             return;
         }
