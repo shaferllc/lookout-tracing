@@ -37,7 +37,7 @@ final class Client
      * Send one job run event. Returns {@code run_id} from the API response, or null on failure.
      *
      * @param  array<string, mixed>|null  $meta
-     * @param  array{class?: string, message?: string}|null  $exception
+     * @param  array{class?: string, message?: string, stack?: string}|null  $exception
      */
     public static function captureRun(
         string $jobName,

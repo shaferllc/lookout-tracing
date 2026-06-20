@@ -18,6 +18,7 @@ use Lookout\Tracing\Laravel\Console\InstallLookoutCommand;
 use Lookout\Tracing\Logging\LogIngestClient;
 use Lookout\Tracing\Mail\Client as MailClient;
 use Lookout\Tracing\Metrics\MetricsIngestClient;
+use Lookout\Tracing\Model\Client as ModelChangeClient;
 use Lookout\Tracing\Notification\Client as NotificationClient;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
@@ -59,6 +60,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->configureJobClientFromConfig();
         $this->configureMailClientFromConfig();
         $this->configureNotificationClientFromConfig();
+        $this->configureModelChangeClientFromConfig();
         $this->configureDomainEventClientFromConfig();
         $this->configureProfileClientFromConfig();
         $this->configureAutoProfilerFromConfig();
@@ -105,6 +107,15 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             $app = $this->app;
             $app->terminating(static function () {
                 DomainEventClient::instance()->flush();
+            });
+        }
+
+        $modelCfg = config('lookout-tracing.model_monitoring');
+        if (is_array($modelCfg) && ! empty($modelCfg['enabled']) && ! empty($modelCfg['flush_on_terminate'])) {
+            /** @var Application $app */
+            $app = $this->app;
+            $app->terminating(static function () {
+                ModelChangeClient::instance()->flush();
             });
         }
 
@@ -357,6 +368,29 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         ]);
     }
 
+    protected function configureModelChangeClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $modelCfg = is_array($cfg['model_monitoring'] ?? null) ? $cfg['model_monitoring'] : [];
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['model_ingest_path']) && is_string($cfg['model_ingest_path']) ? $cfg['model_ingest_path'] : '/api/ingest/model';
+        $path = '/'.ltrim(trim($path), '/');
+
+        ModelChangeClient::configure([
+            'enabled' => (bool) ($modelCfg['enabled'] ?? false),
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'model_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+            'max_buffer' => (int) ($modelCfg['max_buffer'] ?? 200),
+        ]);
+    }
+
     protected function configureDomainEventClientFromConfig(): void
     {
         $cfg = config('lookout-tracing');
@@ -478,6 +512,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         JobMonitoringInstrumentation::register($events);
         MailMonitoringInstrumentation::register($events);
         NotificationMonitoringInstrumentation::register($events);
+        ModelMonitoringInstrumentation::register($events);
         DomainEventMonitoringInstrumentation::register($events);
     }
 

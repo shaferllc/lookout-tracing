@@ -92,9 +92,14 @@ final class JobMonitoringInstrumentation
                 if (strlen($msg) > 500) {
                     $msg = substr($msg, 0, 497).'…';
                 }
+                $trace = $ex->getTraceAsString();
+                if (strlen($trace) > 20000) {
+                    $trace = substr($trace, 0, 19997).'…';
+                }
                 $exception = [
                     'class' => $ex::class,
                     'message' => $msg,
+                    'stack' => $trace,
                 ];
             }
         }

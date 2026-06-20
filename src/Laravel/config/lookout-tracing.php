@@ -87,6 +87,8 @@ return [
 
     'notification_ingest_path' => env('LOOKOUT_NOTIFICATION_INGEST_PATH', '/api/ingest/notification'),
 
+    'model_ingest_path' => env('LOOKOUT_MODEL_INGEST_PATH', '/api/ingest/model'),
+
     'profile_ingest_path' => '/api/ingest/profile',
 
     /*
@@ -212,6 +214,28 @@ return [
         'enabled' => env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED') !== null
             ? filter_var(env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
             : $laravelQuickStart,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Eloquent model monitoring (POST /api/ingest/model)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel buffers eloquent created/updated/deleted events for App\ models
+    | (configurable). Only attribute names are sent on update — never values.
+    | Defaults on with LOOKOUT_LARAVEL=true. Respect project model_ingest_enabled on the server.
+    |
+    */
+    'model_monitoring' => [
+        'enabled' => env('LOOKOUT_MODEL_MONITORING_ENABLED') !== null
+            ? filter_var(env('LOOKOUT_MODEL_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
+            : $laravelQuickStart,
+        'namespace_prefix' => env('LOOKOUT_MODEL_MONITORING_NAMESPACE', 'App\\'),
+        'allowlist' => [],
+        'ignore_prefixes' => ['Illuminate\\', 'Laravel\\', 'Livewire\\'],
+        'ignore_change_attributes' => ['updated_at', 'created_at'],
+        'flush_on_terminate' => (bool) env('LOOKOUT_MODEL_MONITORING_FLUSH_ON_TERMINATE', true),
+        'max_buffer' => (int) env('LOOKOUT_MODEL_MONITORING_MAX_BUFFER', 200),
     ],
 
     /*
