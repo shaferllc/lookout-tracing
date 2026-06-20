@@ -12,9 +12,13 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Lookout\Tracing\Cron\Client as CronClient;
+use Lookout\Tracing\DomainEvent\Client as DomainEventClient;
+use Lookout\Tracing\Job\Client as JobIngestClient;
 use Lookout\Tracing\Laravel\Console\InstallLookoutCommand;
 use Lookout\Tracing\Logging\LogIngestClient;
+use Lookout\Tracing\Mail\Client as MailClient;
 use Lookout\Tracing\Metrics\MetricsIngestClient;
+use Lookout\Tracing\Notification\Client as NotificationClient;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
 use Lookout\Tracing\Reporting\ErrorReportClient;
@@ -52,6 +56,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->configureMetricsIngestFromConfig();
         $this->overridePerformanceEnabledFromManagementApi();
         $this->configureCronClientFromConfig();
+        $this->configureJobClientFromConfig();
+        $this->configureMailClientFromConfig();
+        $this->configureNotificationClientFromConfig();
+        $this->configureDomainEventClientFromConfig();
         $this->configureProfileClientFromConfig();
         $this->configureAutoProfilerFromConfig();
         $this->configureErrorReportClient();
@@ -88,6 +96,15 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             $app = $this->app;
             $app->terminating(static function () {
                 \lookout_metrics()->flush();
+            });
+        }
+
+        $eventCfg = config('lookout-tracing.event_monitoring');
+        if (is_array($eventCfg) && ! empty($eventCfg['enabled']) && ! empty($eventCfg['flush_on_terminate'])) {
+            /** @var Application $app */
+            $app = $this->app;
+            $app->terminating(static function () {
+                DomainEventClient::instance()->flush();
             });
         }
 
@@ -283,6 +300,86 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         ]);
     }
 
+    protected function configureJobClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        JobIngestClient::configure([
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'job_ingest_path' => $cfg['job_ingest_path'] ?? '/api/ingest/job',
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+        ]);
+    }
+
+    protected function configureMailClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['mail_ingest_path']) && is_string($cfg['mail_ingest_path']) ? $cfg['mail_ingest_path'] : '/api/ingest/mail';
+        $path = '/'.ltrim(trim($path), '/');
+
+        MailClient::configure([
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'mail_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+        ]);
+    }
+
+    protected function configureNotificationClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['notification_ingest_path']) && is_string($cfg['notification_ingest_path']) ? $cfg['notification_ingest_path'] : '/api/ingest/notification';
+        $path = '/'.ltrim(trim($path), '/');
+
+        NotificationClient::configure([
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'notification_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+        ]);
+    }
+
+    protected function configureDomainEventClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $eventCfg = is_array($cfg['event_monitoring'] ?? null) ? $cfg['event_monitoring'] : [];
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['event_ingest_path']) && is_string($cfg['event_ingest_path']) ? $cfg['event_ingest_path'] : '/api/ingest/event';
+        $path = '/'.ltrim(trim($path), '/');
+
+        DomainEventClient::configure([
+            'enabled' => (bool) ($eventCfg['enabled'] ?? false),
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'event_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+            'max_buffer' => (int) ($eventCfg['max_buffer'] ?? 100),
+        ]);
+    }
+
     protected function configureProfileClientFromConfig(): void
     {
         $cfg = config('lookout-tracing');
@@ -378,6 +475,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $events = $this->app->make(Dispatcher::class);
         FrameworkInstrumentation::register($events);
         PerformanceInstrumentation::register($events);
+        JobMonitoringInstrumentation::register($events);
+        MailMonitoringInstrumentation::register($events);
+        NotificationMonitoringInstrumentation::register($events);
+        DomainEventMonitoringInstrumentation::register($events);
     }
 
     protected function registerQueueTracePayloadHook(): void

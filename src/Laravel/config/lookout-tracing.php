@@ -79,6 +79,14 @@ return [
 
     'cron_ingest_path' => '/api/ingest/cron',
 
+    'job_ingest_path' => '/api/ingest/job',
+
+    'mail_ingest_path' => env('LOOKOUT_MAIL_INGEST_PATH', '/api/ingest/mail'),
+
+    'event_ingest_path' => env('LOOKOUT_EVENT_INGEST_PATH', '/api/ingest/event'),
+
+    'notification_ingest_path' => env('LOOKOUT_NOTIFICATION_INGEST_PATH', '/api/ingest/notification'),
+
     'profile_ingest_path' => '/api/ingest/profile',
 
     /*
@@ -136,6 +144,74 @@ return [
         'enabled' => (bool) env('LOOKOUT_METRICS_ENABLED', false),
         'flush_on_terminate' => (bool) env('LOOKOUT_METRICS_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_METRICS_MAX_BUFFER', 500),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Queue job monitoring (POST /api/ingest/job)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel queue workers report in_progress → ok/error runs to Lookout.
+    | Defaults on with LOOKOUT_LARAVEL=true; requires a resolved API key and base URI.
+    | Respect project job_ingest_enabled on the server (403 when off).
+    |
+    */
+    'job_monitoring' => [
+        'enabled' => env('LOOKOUT_JOB_MONITORING_ENABLED') !== null
+            ? filter_var(env('LOOKOUT_JOB_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
+            : $laravelQuickStart,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Mail monitoring (POST /api/ingest/mail)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel reports MessageSent events to Lookout (Telescope Mail Watcher).
+    | Defaults on with LOOKOUT_LARAVEL=true. Respect project mail_ingest_enabled on the server.
+    |
+    */
+    'mail_monitoring' => [
+        'enabled' => env('LOOKOUT_MAIL_MONITORING_ENABLED') !== null
+            ? filter_var(env('LOOKOUT_MAIL_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
+            : $laravelQuickStart,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Domain event monitoring (POST /api/ingest/event)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, dispatches are buffered and flushed at end of request (or manually).
+    | Use allowlist for specific event classes, or wildcard=true with ignore_prefixes.
+    | Defaults on with LOOKOUT_LARAVEL=true. Respect project event_ingest_enabled on the server.
+    |
+    */
+    'event_monitoring' => [
+        'enabled' => env('LOOKOUT_EVENT_MONITORING_ENABLED') !== null
+            ? filter_var(env('LOOKOUT_EVENT_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
+            : $laravelQuickStart,
+        'wildcard' => (bool) env('LOOKOUT_EVENT_MONITORING_WILDCARD', false),
+        'allowlist' => [],
+        'ignore_prefixes' => ['Illuminate\\', 'Laravel\\', 'Livewire\\'],
+        'wildcard_sample_every' => max(1, (int) env('LOOKOUT_EVENT_MONITORING_SAMPLE_EVERY', 1)),
+        'flush_on_terminate' => (bool) env('LOOKOUT_EVENT_MONITORING_FLUSH_ON_TERMINATE', true),
+        'max_buffer' => (int) env('LOOKOUT_EVENT_MONITORING_MAX_BUFFER', 100),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Notification monitoring (POST /api/ingest/notification)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel reports NotificationSent events to Lookout.
+    | Defaults on with LOOKOUT_LARAVEL=true. Respect project notification_ingest_enabled on the server.
+    |
+    */
+    'notification_monitoring' => [
+        'enabled' => env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED') !== null
+            ? filter_var(env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED'), FILTER_VALIDATE_BOOLEAN)
+            : $laravelQuickStart,
     ],
 
     /*
