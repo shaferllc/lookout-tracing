@@ -1281,12 +1281,17 @@ final class PerformanceInstrumentation
             return;
         }
 
-        $name = $view->name();
-        if ($name === '') {
-            $name = 'view';
+        $rawName = $view->name();
+
+        // Skip third-party/package namespaces (pagination::, mail::, <pkg>::) but keep
+        // Laravel's anonymous component namespace (__components::), which maps to first-party templates.
+        if (self::viewIsVendorNamespaced($rawName)) {
+            return;
         }
 
-        if (self::viewIsDenied($name)) {
+        $name = self::viewDisplayName($view, $rawName);
+
+        if (self::viewIsDeniedByConfig($name)) {
             return;
         }
 
@@ -1318,13 +1323,16 @@ final class PerformanceInstrumentation
         $child->finish($now);
     }
 
-    private static function viewIsDenied(string $name): bool
+    private static function viewIsVendorNamespaced(string $name): bool
     {
-        // Skip namespaced vendor/package views (e.g. pagination::*, mail::message).
-        if (str_contains($name, '::')) {
-            return true;
-        }
+        // Anonymous Blade components compile to the __components:: namespace; treat them as
+        // first-party (resolved to a readable name from their path). Any other "::" name is
+        // a registered package/vendor namespace and is skipped.
+        return str_contains($name, '::') && ! str_starts_with($name, '__components::');
+    }
 
+    private static function viewIsDeniedByConfig(string $name): bool
+    {
         $perf = config('lookout-tracing.performance');
         $patterns = is_array($perf) && is_array($perf['view_deny'] ?? null) ? $perf['view_deny'] : [];
         foreach ($patterns as $pattern) {
@@ -1334,6 +1342,47 @@ final class PerformanceInstrumentation
         }
 
         return false;
+    }
+
+    /**
+     * Human-readable view name. Anonymous components (__components::<hash>) and unnamed views
+     * resolve to a dotted path relative to the views directory (e.g. components.project.shell).
+     */
+    private static function viewDisplayName(View $view, string $rawName): string
+    {
+        if ($rawName !== '' && ! str_starts_with($rawName, '__components::')) {
+            return $rawName;
+        }
+
+        $derived = self::viewNameFromPath($view->getPath());
+        if ($derived !== null) {
+            return $derived;
+        }
+
+        return $rawName !== '' ? $rawName : 'view';
+    }
+
+    private static function viewNameFromPath(?string $path): ?string
+    {
+        if (! is_string($path) || $path === '') {
+            return null;
+        }
+
+        $rel = str_replace('\\', '/', $path);
+        $pos = strrpos($rel, '/views/');
+        if ($pos !== false) {
+            $rel = substr($rel, $pos + 7);
+        } else {
+            $base = str_replace('\\', '/', base_path());
+            if (str_starts_with($rel, $base)) {
+                $rel = ltrim(substr($rel, strlen($base)), '/');
+            }
+        }
+
+        $rel = (string) preg_replace('/\.blade\.php$|\.php$/', '', $rel);
+        $rel = trim(str_replace('/', '.', $rel), '.');
+
+        return $rel !== '' ? substr($rel, 0, 512) : null;
     }
 
     private static function viewMaxPerRequest(): int
