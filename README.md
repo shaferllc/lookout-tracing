@@ -193,9 +193,9 @@ Optional **breadcrumb recorders** (same config block as core instrumentation, `i
 | Solutions | **`SolutionsMiddleware`** + `reporting.client_solutions` |
 | Console commands | Breadcrumbs + performance spans when enabled |
 | Jobs and queues | Breadcrumbs + queue trace propagation + performance |
-| Queries | Optional SQL breadcrumbs; **DB spans** + query insights when performance DB collector on |
+| Queries | Sampled SQL breadcrumbs (default on); **DB spans** with fingerprint, bindings, slow flag + root rollup (`db.total_duration_ms`, `db.slow_query_count`) when performance DB collector on |
 | Database transactions | Breadcrumbs when `instrumentation.database_transactions` or `comprehensive_collection` |
-| Cache events | Breadcrumbs + optional cache **spans** |
+| Cache events | Cache breadcrumbs (default on) + cache **spans** (default on when performance enabled) |
 | Redis commands | Breadcrumbs + optional Redis **spans** |
 | External HTTP | Breadcrumbs + **http.client** spans (Guzzle / `Http::`) |
 | Views | View composer breadcrumbs + optional view **spans** |

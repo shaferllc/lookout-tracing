@@ -227,8 +227,9 @@ return [
 
         /*
          * SQL breadcrumbs (can be noisy). database_sample_every: 1 = every query, 5 = every 5th.
+         * Enabled by default so error reports include sampled SQL context; set false to disable.
          */
-        'database' => env('LOOKOUT_INSTRUMENT_DATABASE', false),
+        'database' => env('LOOKOUT_INSTRUMENT_DATABASE', true),
         'database_sample_every' => (int) env('LOOKOUT_INSTRUMENT_DATABASE_SAMPLE_EVERY', 5),
 
         /*
@@ -259,7 +260,7 @@ return [
         /*
          * Optional breadcrumb recorders. Requires instrumentation.enabled.
          */
-        'cache' => env('LOOKOUT_INSTRUMENT_CACHE', false),
+        'cache' => env('LOOKOUT_INSTRUMENT_CACHE', true),
         'redis' => env('LOOKOUT_INSTRUMENT_REDIS', false),
         'views' => env('LOOKOUT_INSTRUMENT_VIEWS', false),
         'outbound_http' => env('LOOKOUT_INSTRUMENT_OUTBOUND_HTTP', false),
@@ -444,15 +445,18 @@ return [
          * http_client: Guzzle middleware + Laravel Http:: spans (RequestSending / ResponseReceived) + server.address.
          *
          * db.query_count is always set on the transaction root when the database collector is on (including 0).
+         * db.total_duration_ms and db.slow_query_count summarize all queries in the transaction (not just sampled spans).
          * repeat_query_max / suspected_n_plus_one require query_insights.enabled and at least one query.
          * php.memory_* uses memory_reset_peak_usage() per HTTP request, queue job, Artisan command, and Octane
          * RequestReceived so peaks reflect the current unit of work in long-lived workers.
          */
+        'slow_query_ms' => (float) env('LOOKOUT_PERFORMANCE_SLOW_QUERY_MS', 100),
+
         'collectors' => [
             'http_server' => env('LOOKOUT_PERFORMANCE_COLLECT_HTTP', true),
             'database' => env('LOOKOUT_PERFORMANCE_COLLECT_DB', true),
             'http_client' => env('LOOKOUT_PERFORMANCE_COLLECT_HTTP_CLIENT', true),
-            'cache' => env('LOOKOUT_PERFORMANCE_COLLECT_CACHE', false),
+            'cache' => env('LOOKOUT_PERFORMANCE_COLLECT_CACHE', true),
             'redis' => env('LOOKOUT_PERFORMANCE_COLLECT_REDIS', false),
             'console' => env('LOOKOUT_PERFORMANCE_COLLECT_CONSOLE', true),
             'queue' => env('LOOKOUT_PERFORMANCE_COLLECT_QUEUE', true),

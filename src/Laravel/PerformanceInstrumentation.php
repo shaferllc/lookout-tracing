@@ -51,6 +51,10 @@ final class PerformanceInstrumentation
 
     private static int $queryTotalCount = 0;
 
+    private static float $queryTotalDurationMs = 0.0;
+
+    private static int $slowQueryCount = 0;
+
     /** @var array<string, int> */
     private static array $sqlFingerprintCounts = [];
 
@@ -135,6 +139,8 @@ final class PerformanceInstrumentation
     {
         self::$querySeq = 0;
         self::$queryTotalCount = 0;
+        self::$queryTotalDurationMs = 0.0;
+        self::$slowQueryCount = 0;
         self::$sqlFingerprintCounts = [];
         self::$cacheGetStartStack = [];
         self::$cacheWriteStartStack = [];
@@ -910,6 +916,22 @@ final class PerformanceInstrumentation
         }
     }
 
+    /**
+     * @internal
+     */
+    public static function resetCountersForTesting(): void
+    {
+        self::resetHttpRequestCounters();
+    }
+
+    /**
+     * @internal
+     */
+    public static function applyTransactionInsightsForTesting(): void
+    {
+        self::attachTransactionInsights();
+    }
+
     public static function onQueryExecuted(QueryExecuted $event): void
     {
         if (! self::performanceEnabled() || ! self::collector('database')) {
@@ -917,6 +939,13 @@ final class PerformanceInstrumentation
         }
 
         self::$queryTotalCount++;
+        self::$queryTotalDurationMs += max(0.0, (float) $event->time);
+
+        $slowThresholdMs = self::slowQueryThresholdMs();
+        if ($slowThresholdMs > 0 && (float) $event->time >= $slowThresholdMs) {
+            self::$slowQueryCount++;
+        }
+
         $fp = SqlFingerprint::normalize($event->sql);
         if ($fp !== '') {
             self::$sqlFingerprintCounts[$fp] = (self::$sqlFingerprintCounts[$fp] ?? 0) + 1;
@@ -938,11 +967,32 @@ final class PerformanceInstrumentation
         $start = $now - ($event->time / 1000.0);
         $sql = strlen($event->sql) > 2000 ? substr($event->sql, 0, 2000).'…' : $event->sql;
         $child = $parent->startChild(SpanOperation::DB_QUERY, $sql, $start);
-        $child->setData([
+        $spanData = [
             'db.system' => $event->connectionName,
             'db.duration_ms' => $event->time,
-        ]);
+            'db.bindings_count' => count($event->bindings),
+        ];
+        if ($fp !== '') {
+            $spanData['db.statement_fingerprint'] = $fp;
+        }
+        if ($event->readWriteType !== null) {
+            $spanData['db.read_write'] = $event->readWriteType;
+        }
+        if ($slowThresholdMs > 0 && (float) $event->time >= $slowThresholdMs) {
+            $spanData['db.slow'] = true;
+        }
+        $child->setData($spanData);
         $child->finish($now);
+    }
+
+    private static function slowQueryThresholdMs(): float
+    {
+        $perf = config('lookout-tracing.performance');
+        if (! is_array($perf)) {
+            return 100.0;
+        }
+
+        return max(0.0, (float) ($perf['slow_query_ms'] ?? 100));
     }
 
     public static function onMessageLogged(MessageLogged $event): void
@@ -981,6 +1031,12 @@ final class PerformanceInstrumentation
 
         if (self::collector('database')) {
             $data['db.query_count'] = self::$queryTotalCount;
+            if (self::$queryTotalCount > 0) {
+                $data['db.total_duration_ms'] = round(self::$queryTotalDurationMs, 3);
+            }
+            if (self::$slowQueryCount > 0) {
+                $data['db.slow_query_count'] = self::$slowQueryCount;
+            }
         }
 
         if ($enabled && self::collector('database') && self::$queryTotalCount > 0) {
