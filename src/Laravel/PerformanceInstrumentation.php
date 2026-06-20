@@ -1257,14 +1257,18 @@ final class PerformanceInstrumentation
             return;
         }
 
-        $app->afterResolving('view', function (ViewFactory $factory): void {
-            $factory->composer('*', function (View $view): void {
-                self::onViewComposing($view);
-            });
-        });
+        $attach = static function (ViewFactory $factory): void {
+            $factory->composer('*', [self::class, 'onViewComposing']);
+        };
+
+        if ($app->resolved('view')) {
+            $attach($app->make('view'));
+        }
+
+        $app->afterResolving('view', $attach);
     }
 
-    private static function onViewComposing(View $view): void
+    public static function onViewComposing(View $view): void
     {
         if (! self::performanceEnabled() || ! self::collector('view')) {
             return;
