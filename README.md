@@ -111,7 +111,7 @@ Common `op` values are defined on `Lookout\Tracing\SpanOperation` (`http.server`
 
 ## Structured logs
 
-**`lookout_logger()->info('User %s logged in', ['alice'])`**, optional **`flush()`**, and a **Monolog** handler. Rows go to **`POST /api/ingest/log`** with the same **`api_key`** / **`base_uri`** as tracing; enable with **`LOOKOUT_LOGS_ENABLED=true`** (Laravel: `config/lookout-tracing.php` → **`logging.enabled`**). Laravel registers a **terminating** flush when **`logging.enabled`** and **`logging.flush_on_terminate`** are true. Long workers should call **`lookout_logger()->flush()`** on a timer or after batches.
+**`lookout_logger()->info('User %s logged in', ['alice'])`**, optional **`flush()`**, and a **Monolog** handler. Rows go to **`POST /api/ingest/log`** with the same **`api_key`** / **`base_uri`** as tracing; enabled from the dashboard (**Monitoring → Signals**), with **`LOOKOUT_LOGS_ENABLED`** as a local override (env > site). Laravel registers a **terminating** flush when **`logging.enabled`** and **`logging.flush_on_terminate`** are true. Long workers should call **`lookout_logger()->flush()`** on a timer or after batches.
 
 ```php
 lookout_logger()->info('order placed', null, ['order_id' => '42']);
@@ -128,7 +128,7 @@ $log->pushHandler(new LookoutMonologHandler());
 
 ## Custom metrics
 
-**`lookout_metrics()->count('orders.completed', 1)`**, **`gauge()`**, **`distribution()`**, optional **`MetricUnit`**, and **`flush()`**. Samples go to **`POST /api/ingest/metric`**; the active **`trace_id`** is attached when a transaction is in flight so the Lookout UI can correlate rollups with traces. Enable with **`LOOKOUT_METRICS_ENABLED=true`** (Laravel: **`metrics.enabled`**). Laravel flushes on **terminating** when **`metrics.enabled`** and **`metrics.flush_on_terminate`** are true.
+**`lookout_metrics()->count('orders.completed', 1)`**, **`gauge()`**, **`distribution()`**, optional **`MetricUnit`**, and **`flush()`**. Samples go to **`POST /api/ingest/metric`**; the active **`trace_id`** is attached when a transaction is in flight so the Lookout UI can correlate rollups with traces. Enabled from the dashboard (**Monitoring → Signals**), with **`LOOKOUT_METRICS_ENABLED`** as a local override (env > site). Laravel flushes on **terminating** when **`metrics.enabled`** and **`metrics.flush_on_terminate`** are true.
 
 Optional **`MetricsIngestClient::configure(['before_send_metric' => fn (array $row): ?array => $row])`** drops or mutates rows before enqueue (return **`null`** to skip).
 
@@ -206,7 +206,13 @@ Optional **breadcrumb recorders** (same config block as core instrumentation, `i
 | Glows / filesystem | Manual **`GlowBreadcrumb::glow()`**, **`FilesystemBreadcrumb::record()`** |
 | Customise report | **`reporting.middleware`**, **`AttributeProviderInterface`**, **`ReportScope`** |
 
-Global no-op: `LOOKOUT_DISABLED` or `reporting.disabled`. Ingest fields **`is_log`**, **`open_frame_index`**, and **`grouping_override`** (custom fingerprint when `fingerprint` is empty; camelCase aliases **`isLog`**, **`openFrameIndex`**, **`overriddenGrouping`**) are stored on the server. In the Lookout app, **Project → Monitoring modes** can turn off **`POST /api/ingest/trace`** and **`POST /api/ingest/rum`** per project while leaving error ingest enabled.
+Global no-op: `LOOKOUT_DISABLED` or `reporting.disabled`. Ingest fields **`is_log`**, **`open_frame_index`**, and **`grouping_override`** (custom fingerprint when `fingerprint` is empty; camelCase aliases **`isLog`**, **`openFrameIndex`**, **`overriddenGrouping`**) are stored on the server. In the Lookout app, **Project → Monitoring → Signals** turns each signal type on/off per project while leaving error ingest always on.
+
+### Signal control: dashboard + env overrides
+
+Which signals are captured/sent is controlled from the Lookout dashboard (**Project → Monitoring → Signals**) and fetched by the SDK at boot via **`GET /api/config`** (cached for **`LOOKOUT_REMOTE_CONFIG_TTL`**, default 300s; disable the whole mechanism with **`LOOKOUT_REMOTE_CONFIG=false`**). Sample rates sync the same way. This replaced the per-signal `LOOKOUT_*_MONITORING_ENABLED` / `*_ENABLED` env vars as the *primary* switch and the old `LOOKOUT_PERFORMANCE_SYNC_FROM_API` (+ `LOOKOUT_SYNC_API_TOKEN`, `LOOKOUT_SYNC_PROJECT_ID`), which are gone.
+
+**Precedence is env > site:** an explicitly-set `LOOKOUT_*_ENABLED` / `*_SAMPLE_RATE` still wins over the dashboard. When env force-enables a signal the dashboard has off, the SDK sends **`X-Lookout-Env-Forced`** so the server accepts it, and reports its env overrides on the config fetch so the dashboard shows them as "Set by env."
 
 ### User feedback (crash page)
 
@@ -362,7 +368,7 @@ Tune knobs in `config/lookout-tracing.php` (`instrumentation.*`, `breadcrumbs_ma
 
 ### Performance monitoring (traces & spans)
 
-Enable with **`LOOKOUT_PERFORMANCE_ENABLED=true`** (with a resolved API key and base URI from **`LOOKOUT_DSN`**, **`LOOKOUT_API_KEY`** + **`LOOKOUT_URL`**, etc.). This turns on **sampled span recording**: OpenTelemetry-style **trace ids**, **spans**, and optional **span events**, sent to **`POST /api/ingest/trace`** via `Tracer::flush()` or **`LOOKOUT_TRACING_AUTO_FLUSH=true`**. Ensure the project allows trace ingest in **Lookout → Project settings → Monitoring modes**; otherwise the API returns **403**.
+Enabled from the dashboard (**Monitoring → Signals**), with **`LOOKOUT_PERFORMANCE_ENABLED`** as a local override (env > site); needs a resolved API key and base URI from **`LOOKOUT_DSN`**, **`LOOKOUT_API_KEY`** + **`LOOKOUT_URL`**, etc. This turns on **sampled span recording**: OpenTelemetry-style **trace ids**, **spans**, and optional **span events**, sent to **`POST /api/ingest/trace`** via `Tracer::flush()` or **`LOOKOUT_TRACING_AUTO_FLUSH=true`**. If the project has trace ingest off in **Monitoring → Signals** the SDK stops sending (or sends **`X-Lookout-Env-Forced`** when env forces it on); otherwise the API returns **403**.
 
 1. **Middleware (order matters):** register **`lookoutTracing.continueTrace`** first, then **`lookoutTracing.performance`**, or set **`LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE=true`** to append only the performance middleware to `web` and `api` (you still add `continueTrace` yourself if it is not already in those groups).
 2. **Sampling:** default **`RateSampler`** at **10%** (`LOOKOUT_PERFORMANCE_SAMPLE_RATE=0.1`). Implement `Lookout\Tracing\Performance\Sampler` and set `performance.sampler.class` for custom logic. Traces continued from an incoming traceparent with **`sampled=0`** never record spans (propagation only). Optional **tail sampling** (`LOOKOUT_PERFORMANCE_TAIL_SAMPLING=true`): keep slow roots (`LOOKOUT_PERFORMANCE_TAIL_SLOW_MS`), errors / 5xx, optional `LOOKOUT_PERFORMANCE_TAIL_RESIDUAL_RATE` for a thin random sample of the rest — same theme as lowering head sample rates in production while still capturing outliers.

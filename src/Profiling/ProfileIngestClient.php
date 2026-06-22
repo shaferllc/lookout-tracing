@@ -193,7 +193,7 @@ final class ProfileIngestClient
                 return new ProfileCapture(ProfileCapture::BACKEND_EXCIMER, $profiler, microtime(true));
             }
 
-            if (! (bool) (self::$config['manual_pulse_fallback'] ?? true)) {
+            if (! (bool) (self::$config['manual_pulse_fallback'] ?? false)) {
                 return null;
             }
 

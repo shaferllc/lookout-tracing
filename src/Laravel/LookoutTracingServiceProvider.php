@@ -714,7 +714,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             'profile_ingest_path' => $cfg['profile_ingest_path'] ?? '/api/ingest/profile',
             'period_us' => (int) ($p['period_us'] ?? 10000),
             'event_type' => is_string($p['event_type'] ?? null) ? $p['event_type'] : 'wall',
-            'manual_pulse_fallback' => (bool) ($p['manual_pulse_fallback'] ?? true),
+            'manual_pulse_fallback' => (bool) ($p['manual_pulse_fallback'] ?? false),
             'environment' => is_string($cfg['environment'] ?? null) ? $cfg['environment'] : null,
             'release' => $releaseCfg !== '' ? $releaseCfg : null,
         ]);

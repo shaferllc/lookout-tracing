@@ -145,7 +145,12 @@ return [
         'event_type' => env('LOOKOUT_PROFILING_EVENT_TYPE', 'wall'),
         'min_duration_ms' => (int) env('LOOKOUT_PROFILING_MIN_DURATION_MS', 0),
         'max_samples' => (int) env('LOOKOUT_PROFILING_MAX_SAMPLES', 10000),
-        'manual_pulse_fallback' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_MANUAL_PULSE_FALLBACK'), $laravelQuickStart),
+        // Off by default: without Excimer the cooperative pulse sampler only snapshots the
+        // begin/end of a capture — both inside the framework/middleware pipeline — so an
+        // auto-profiled request yields a profile dominated by the pipeline and the SDK's own
+        // frames rather than real application work. Opt in explicitly for deliberate
+        // lookout_profiles()->time()/profile() cooperative sampling.
+        'manual_pulse_fallback' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_MANUAL_PULSE_FALLBACK'), false),
     ],
 
     'log_ingest_path' => env('LOOKOUT_LOG_INGEST_PATH', '/api/ingest/log'),
