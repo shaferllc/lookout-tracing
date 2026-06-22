@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace Lookout\Tracing\Laravel;
 
 use Lookout\Tracing\BreadcrumbBuffer;
+use Lookout\Tracing\Dump\DumpIngestClient;
 use Symfony\Component\VarDumper\VarDumper;
 use Throwable;
 
 /**
- * Hooks {@see VarDumper} so {@code dump()} calls add breadcrumbs.
+ * Hooks {@see VarDumper} so {@code dump()}/{@code dd()} calls add a breadcrumb and, when dump ingest is
+ * enabled, capture the full value as a normalized tree to the Dumps watcher. Native dump output still
+ * renders locally — we observe, never replace.
  */
 final class DumpInstrumentation
 {
@@ -31,6 +34,11 @@ final class DumpInstrumentation
                     [],
                     'dump'
                 );
+            } catch (Throwable) {
+                // ignore
+            }
+            try {
+                DumpIngestClient::instance()->capture($var);
             } catch (Throwable) {
                 // ignore
             }

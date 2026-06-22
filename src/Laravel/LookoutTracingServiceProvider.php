@@ -12,8 +12,10 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Lookout\Tracing\Batch\Client as BatchIngestClient;
 use Lookout\Tracing\Cron\Client as CronClient;
 use Lookout\Tracing\DomainEvent\Client as DomainEventClient;
+use Lookout\Tracing\Dump\DumpIngestClient;
 use Lookout\Tracing\Gate\Client as GateClient;
 use Lookout\Tracing\Job\Client as JobIngestClient;
 use Lookout\Tracing\Laravel\Console\InstallLookoutCommand;
@@ -37,6 +39,9 @@ final class LookoutTracingServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/config/lookout-tracing.php', 'lookout-tracing');
+
+        // Configure the dump ingest client early so capture() is enabled before any dumps run.
+        $this->configureDumpIngestFromConfig();
     }
 
     public function boot(): void
@@ -64,6 +69,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->overridePerformanceEnabledFromManagementApi();
         $this->configureCronClientFromConfig();
         $this->configureJobClientFromConfig();
+        $this->configureBatchClientFromConfig();
         $this->configureMailClientFromConfig();
         $this->configureNotificationClientFromConfig();
         $this->configureModelChangeClientFromConfig();
@@ -114,6 +120,29 @@ final class LookoutTracingServiceProvider extends ServiceProvider
                     return;
                 }
                 \lookout_metrics()->flush();
+            });
+        }
+
+        $inst = config('lookout-tracing.instrumentation');
+        $dumpsEnabled = (bool) (config('lookout-tracing.dumps.enabled') ?? false);
+        if (is_array($inst) && ! empty($inst['enabled']) && (! empty($inst['dump']) || $dumpsEnabled)) {
+            // Install after all providers boot so our VarDumper handler wraps any set by Debugbar /
+            // Symfony's DumpListener (which boot after this package) instead of being replaced by them.
+            $this->app->booted(static function (): void {
+                DumpInstrumentation::register();
+            });
+        }
+
+        $dumpCfg = config('lookout-tracing.dumps');
+        if (is_array($dumpCfg) && ! empty($dumpCfg['enabled']) && ! empty($dumpCfg['flush_on_terminate'])) {
+            /** @var Application $app */
+            $app = $this->app;
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
+                DumpIngestClient::instance()->flush();
+                DumpIngestClient::instance()->startRequest();
             });
         }
 
@@ -270,6 +299,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             'log_ingest_path' => $path,
             'environment' => $cfg['environment'] ?? null,
             'release' => $releaseForLogs,
+            'sample_rate' => (float) ($log['sample_rate'] ?? 1.0),
             'max_buffer' => (int) ($log['max_buffer'] ?? 50),
         ]);
     }
@@ -296,7 +326,37 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             'metric_ingest_path' => $path,
             'environment' => $cfg['environment'] ?? null,
             'release' => $releaseForMetrics,
+            'sample_rate' => (float) ($m['sample_rate'] ?? 1.0),
             'max_buffer' => (int) ($m['max_buffer'] ?? 500),
+        ]);
+    }
+
+    protected function configureDumpIngestFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $dumps = is_array($cfg['dumps'] ?? null) ? $cfg['dumps'] : [];
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['dump_ingest_path']) && is_string($cfg['dump_ingest_path']) ? $cfg['dump_ingest_path'] : '/api/ingest/dump';
+        $path = '/'.ltrim(trim($path), '/');
+
+        $releaseCfg = isset($cfg['release']) && is_string($cfg['release']) ? trim($cfg['release']) : '';
+        $serializer = is_array($dumps['serializer'] ?? null) ? $dumps['serializer'] : [];
+
+        DumpIngestClient::configure([
+            'enabled' => (bool) ($dumps['enabled'] ?? false),
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'dump_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $releaseCfg !== '' ? $releaseCfg : null,
+            'sample_rate' => (float) ($dumps['sample_rate'] ?? 1.0),
+            'max_batch' => (int) ($dumps['max_batch'] ?? 20),
+            'max_per_request' => (int) ($dumps['max_per_request'] ?? 100),
+            'serializer' => $serializer,
         ]);
     }
 
@@ -379,6 +439,26 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             'api_key' => $cfg['api_key'] ?? null,
             'base_uri' => $base !== '' ? $base : null,
             'job_ingest_path' => $cfg['job_ingest_path'] ?? '/api/ingest/job',
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+        ]);
+    }
+
+    protected function configureBatchClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['batch_ingest_path']) && is_string($cfg['batch_ingest_path']) ? $cfg['batch_ingest_path'] : '/api/ingest/batch';
+        $path = '/'.ltrim(trim($path), '/');
+
+        BatchIngestClient::configure([
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'batch_ingest_path' => $path,
             'environment' => $cfg['environment'] ?? null,
             'release' => $cfg['release'] ?? null,
         ]);
@@ -609,6 +689,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         FrameworkInstrumentation::register($events);
         PerformanceInstrumentation::register($events);
         JobMonitoringInstrumentation::register($events);
+        BatchMonitoringInstrumentation::register($events);
         MailMonitoringInstrumentation::register($events);
         NotificationMonitoringInstrumentation::register($events);
         ModelMonitoringInstrumentation::register($events);
@@ -649,11 +730,6 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             ExtendedBreadcrumbInstrumentation::registerRedisListener();
             PerformanceInstrumentation::registerRedisPerformanceListener();
         });
-
-        $inst = config('lookout-tracing.instrumentation');
-        if (is_array($inst) && ! empty($inst['enabled']) && ! empty($inst['dump'])) {
-            DumpInstrumentation::register();
-        }
     }
 
     protected function registerExceptionReporting(): void

@@ -33,6 +33,10 @@ final class NotificationMonitoringInstrumentation
             return;
         }
 
+        if (! self::passesSampling()) {
+            return;
+        }
+
         $notifiableType = is_object($event->notifiable) ? $event->notifiable::class : null;
         $notifiableId = null;
         if (is_object($event->notifiable) && method_exists($event->notifiable, 'getKey')) {
@@ -49,6 +53,25 @@ final class NotificationMonitoringInstrumentation
             null,
             self::currentTraceId(),
         );
+    }
+
+    /**
+     * Random per-notification client-side sampling. Rate 1.0 keeps everything, 0.0 keeps nothing.
+     */
+    private static function passesSampling(): bool
+    {
+        $cfg = config('lookout-tracing.notification_monitoring');
+        $rate = is_array($cfg) ? (float) ($cfg['sample_rate'] ?? 1.0) : 1.0;
+        $rate = max(0.0, min(1.0, $rate));
+
+        if ($rate >= 1.0) {
+            return true;
+        }
+        if ($rate <= 0.0) {
+            return false;
+        }
+
+        return (mt_rand() / mt_getrandmax()) < $rate;
     }
 
     private static function enabled(): bool

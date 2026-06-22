@@ -37,6 +37,7 @@ final class MetricsIngestClient
      *     metric_ingest_path?: string|null,
      *     environment?: string|null,
      *     release?: string|null,
+     *     sample_rate?: float,
      *     max_buffer?: int,
      *     before_send_metric?: callable(array<string, mixed>): (array<string, mixed>|null)|null,
      * }  $config
@@ -164,6 +165,9 @@ final class MetricsIngestClient
         if (! is_finite($value)) {
             return;
         }
+        if (! $this->passesSampling()) {
+            return;
+        }
 
         $attributes = $context['attributes'] ?? [];
         if (! is_array($attributes)) {
@@ -217,6 +221,9 @@ final class MetricsIngestClient
         }
         $v = (float) $row['value'];
         if (! is_finite($v)) {
+            return;
+        }
+        if (! $this->passesSampling()) {
             return;
         }
         $filtered = $this->applyBeforeSend($this->applyDefaults($row));
@@ -294,6 +301,24 @@ final class MetricsIngestClient
         $out = $cb($row);
 
         return is_array($out) ? $out : null;
+    }
+
+    /**
+     * Random per-sample client-side sampling. Rate 1.0 keeps everything, 0.0 keeps nothing.
+     */
+    private function passesSampling(): bool
+    {
+        $rate = (float) (self::$config['sample_rate'] ?? 1.0);
+        $rate = max(0.0, min(1.0, $rate));
+
+        if ($rate >= 1.0) {
+            return true;
+        }
+        if ($rate <= 0.0) {
+            return false;
+        }
+
+        return (mt_rand() / mt_getrandmax()) < $rate;
     }
 
     private function maybeAutoFlush(): void

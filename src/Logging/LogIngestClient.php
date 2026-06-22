@@ -34,6 +34,7 @@ final class LogIngestClient
      *     log_ingest_path?: string|null,
      *     environment?: string|null,
      *     release?: string|null,
+     *     sample_rate?: float,
      *     max_buffer?: int,
      * }  $config
      */
@@ -112,6 +113,9 @@ final class LogIngestClient
         if (! isset($row['message']) || ! is_string($row['message'])) {
             return;
         }
+        if (! $this->passesSampling()) {
+            return;
+        }
         $this->buffer[] = $this->applyDefaults($row);
         $this->maybeAutoFlush();
     }
@@ -151,6 +155,9 @@ final class LogIngestClient
      */
     private function enqueue(string $level, string $message, array $attributes): void
     {
+        if (! $this->passesSampling()) {
+            return;
+        }
         $row = [
             'level' => $level,
             'message' => $message,
@@ -185,6 +192,24 @@ final class LogIngestClient
         }
 
         return $row;
+    }
+
+    /**
+     * Random per-entry client-side sampling. Rate 1.0 keeps everything, 0.0 keeps nothing.
+     */
+    private function passesSampling(): bool
+    {
+        $rate = (float) (self::$config['sample_rate'] ?? 1.0);
+        $rate = max(0.0, min(1.0, $rate));
+
+        if ($rate >= 1.0) {
+            return true;
+        }
+        if ($rate <= 0.0) {
+            return false;
+        }
+
+        return (mt_rand() / mt_getrandmax()) < $rate;
     }
 
     private function maybeAutoFlush(): void

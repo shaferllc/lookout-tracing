@@ -32,12 +32,15 @@ use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Queue\Events\JobAttempted;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Redis\Events\CommandExecuted;
+use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\View\Factory as ViewFactory;
 use Illuminate\View\View;
+use Lookout\Tracing\Dump\DumpSerializer;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Span;
 use Lookout\Tracing\SpanOperation;
+use Lookout\Tracing\Support\DataRedactor;
 use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Support\SqlFingerprint;
@@ -103,6 +106,17 @@ final class PerformanceInstrumentation
     private static int $viewSpanCount = 0;
 
     private static int $viewOverflowCount = 0;
+
+    /**
+     * View data keys that are framework plumbing, not application inputs — hidden from data_keys
+     * and the captured value tree so "variables passed to the view" reads meaningfully.
+     *
+     * @var list<string>
+     */
+    private const VIEW_INTERNAL_KEYS = ['__env', 'app', 'errors', 'obLevel', '__laravel_slots'];
+
+    /** @var array<string, array{code: string, truncated: bool}|null> per-request template source cache, keyed by absolute path */
+    private static array $viewSourceCache = [];
 
     private static float $httpClientDurationMs = 0.0;
 
@@ -171,6 +185,7 @@ final class PerformanceInstrumentation
         self::$httpClientDurationMs = 0.0;
         self::$viewSpanCount = 0;
         self::$viewOverflowCount = 0;
+        self::$viewSourceCache = [];
     }
 
     public static function registerRedisPerformanceListener(): void
@@ -777,6 +792,20 @@ final class PerformanceInstrumentation
             }
         }
 
+        if ($meta['user_name'] ?? false) {
+            $userName = self::authenticatedUserAttribute(['name', 'display_name', 'username', 'full_name']);
+            if ($userName !== null) {
+                $data['http.user_name'] = substr($userName, 0, 256);
+            }
+        }
+
+        if ($meta['user_email'] ?? false) {
+            $userEmail = self::authenticatedUserAttribute(['email', 'email_address']);
+            if ($userEmail !== null) {
+                $data['http.user_email'] = substr($userEmail, 0, 256);
+            }
+        }
+
         if ($meta['response_size'] ?? true) {
             $bytes = self::responseSize($response);
             if ($bytes !== null) {
@@ -784,9 +813,178 @@ final class PerformanceInstrumentation
             }
         }
 
+        if ($meta['http_method'] ?? true) {
+            $data['http.method'] = strtoupper($request->getMethod());
+        }
+
+        if ($meta['content_type'] ?? true) {
+            $requestType = (string) ($request->headers->get('Content-Type') ?? '');
+            if ($requestType !== '') {
+                $data['http.request.content_type'] = substr($requestType, 0, 128);
+            }
+            $responseType = (string) ($response->headers->get('Content-Type') ?? '');
+            if ($responseType !== '') {
+                $data['http.response.content_type'] = substr($responseType, 0, 128);
+            }
+        }
+
+        if (($meta['route_params'] ?? true) && $route instanceof Route) {
+            $params = self::routeParameters($route);
+            if ($params !== []) {
+                $data['http.route_params'] = $params;
+            }
+        }
+
+        if ($meta['request_headers'] ?? false) {
+            $headers = self::redactedHeaders($request->headers->all());
+            if ($headers !== []) {
+                $data['http.request.headers'] = $headers;
+            }
+        }
+
+        if ($meta['response_headers'] ?? false) {
+            $headers = self::redactedHeaders($response->headers->all());
+            if ($headers !== []) {
+                $data['http.response.headers'] = $headers;
+            }
+        }
+
+        $bodyMaxBytes = max(0, (int) ($meta['body_max_bytes'] ?? 8192));
+
+        if (($meta['request_body'] ?? false) && $bodyMaxBytes > 0) {
+            $body = self::requestBody($request, $bodyMaxBytes);
+            if ($body !== null) {
+                $data['http.request.body'] = $body;
+            }
+        }
+
+        if (($meta['response_body'] ?? false) && $bodyMaxBytes > 0) {
+            $body = self::responseBody($response, $bodyMaxBytes);
+            if ($body !== null) {
+                $data['http.response.body'] = $body;
+            }
+        }
+
         if ($data !== []) {
             $span->setData($data);
         }
+    }
+
+    /**
+     * Route parameters with object (route-model-bound) values reduced to their route key,
+     * then redacted by key name. Never serializes a bound model.
+     *
+     * @return array<string, scalar>
+     */
+    private static function routeParameters(Route $route): array
+    {
+        try {
+            $params = $route->parameters();
+        } catch (Throwable) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($params as $key => $value) {
+            if (is_scalar($value)) {
+                $out[(string) $key] = is_string($value) ? substr($value, 0, 256) : $value;
+            } elseif (is_object($value) && method_exists($value, 'getRouteKey')) {
+                $routeKey = $value->getRouteKey();
+                if (is_scalar($routeKey)) {
+                    $out[(string) $key] = is_string($routeKey) ? substr($routeKey, 0, 256) : $routeKey;
+                }
+            }
+        }
+
+        /** @var array<string, scalar> */
+        return DataRedactor::redact($out);
+    }
+
+    /**
+     * Flatten a Symfony header bag to a redacted, capped string map.
+     *
+     * @param  array<string, array<int, string|null>>  $headers
+     * @return array<string, string>
+     */
+    private static function redactedHeaders(array $headers): array
+    {
+        $flat = [];
+        foreach ($headers as $name => $values) {
+            if (count($flat) >= 64) {
+                break;
+            }
+            $list = is_array($values) ? $values : [$values];
+            $joined = implode(', ', array_map(static fn ($v): string => (string) $v, $list));
+            $flat[strtolower((string) $name)] = substr($joined, 0, 512);
+        }
+
+        /** @var array<string, string> */
+        return DataRedactor::redact($flat);
+    }
+
+    /**
+     * Capture the request body. Structured (JSON/form) payloads are redacted by key and
+     * returned as an array; otherwise the raw content is truncated to $maxBytes.
+     *
+     * @return array<string, mixed>|string|null
+     */
+    private static function requestBody(Request $request, int $maxBytes): array|string|null
+    {
+        try {
+            $params = $request->isJson() ? (array) $request->json()->all() : $request->request->all();
+        } catch (Throwable) {
+            $params = [];
+        }
+
+        if ($params !== []) {
+            $redacted = DataRedactor::redact($params);
+            $encoded = json_encode($redacted);
+            if (is_string($encoded) && strlen($encoded) > $maxBytes) {
+                return ['_truncated' => true, '_bytes' => strlen($encoded)];
+            }
+
+            return $redacted;
+        }
+
+        $raw = (string) $request->getContent();
+        if ($raw === '') {
+            return null;
+        }
+
+        return substr($raw, 0, $maxBytes);
+    }
+
+    /**
+     * Capture textual/JSON response bodies only. JSON is redacted by key; other text is
+     * truncated to $maxBytes. Binary, streamed, and file responses are skipped.
+     *
+     * @return array<string, mixed>|string|null
+     */
+    private static function responseBody(SymfonyResponse $response, int $maxBytes): array|string|null
+    {
+        $type = strtolower((string) ($response->headers->get('Content-Type') ?? ''));
+        $content = $response->getContent();
+        if (! is_string($content) || $content === '') {
+            return null;
+        }
+
+        if (str_contains($type, 'json')) {
+            $decoded = json_decode($content, true);
+            if (is_array($decoded)) {
+                $redacted = DataRedactor::redact($decoded);
+                $encoded = json_encode($redacted);
+                if (is_string($encoded)) {
+                    return strlen($encoded) > $maxBytes ? substr($encoded, 0, $maxBytes) : $redacted;
+                }
+            }
+        }
+
+        $isTextual = $type === '' || str_starts_with($type, 'text/') || str_contains($type, 'json') || str_contains($type, 'xml');
+        if (! $isTextual) {
+            return null;
+        }
+
+        return substr($content, 0, $maxBytes);
     }
 
     private static function authenticatedUserId(): ?string
@@ -798,6 +996,37 @@ final class PerformanceInstrumentation
         }
         if (is_int($id) || (is_string($id) && $id !== '')) {
             return (string) $id;
+        }
+
+        return null;
+    }
+
+    /**
+     * Read the first non-empty string attribute from the authenticated user. Used for the
+     * opt-in user_name / user_email metadata so the monitoring UI can show who made a request.
+     *
+     * @param  list<string>  $attributes
+     */
+    private static function authenticatedUserAttribute(array $attributes): ?string
+    {
+        try {
+            $user = auth()->user();
+        } catch (Throwable) {
+            return null;
+        }
+        if (! is_object($user)) {
+            return null;
+        }
+
+        foreach ($attributes as $attribute) {
+            try {
+                $value = $user->{$attribute} ?? null;
+            } catch (Throwable) {
+                continue;
+            }
+            if (is_string($value) && trim($value) !== '') {
+                return trim($value);
+            }
         }
 
         return null;
@@ -1316,6 +1545,17 @@ final class PerformanceInstrumentation
         if ($keys !== []) {
             $data['view.data_keys'] = $keys;
         }
+        $tree = self::viewDataTree($view);
+        if ($tree !== null) {
+            $data['view.data'] = $tree;
+        }
+        $source = self::viewSource($view);
+        if ($source !== null) {
+            $data['view.source'] = $source['code'];
+            if ($source['truncated']) {
+                $data['view.source_truncated'] = true;
+            }
+        }
 
         $now = microtime(true);
         $child = $parent->startChild(SpanOperation::VIEW_RENDER, substr($name, 0, 512), $now);
@@ -1414,10 +1654,124 @@ final class PerformanceInstrumentation
     {
         $data = $view->getData();
         $keys = array_values(array_filter(array_keys($data), 'is_string'));
-        $keys = array_values(array_diff($keys, ['__env', 'app', 'errors', 'obLevel']));
+        $keys = array_values(array_diff($keys, self::VIEW_INTERNAL_KEYS));
         sort($keys);
 
         return array_slice($keys, 0, 50);
+    }
+
+    /**
+     * Opt-in (performance.view_data) capture of the actual variable VALUES passed to the view,
+     * serialized into a normalized, redacted dump tree (caps + cycle detection + secret redaction
+     * by key). Returns null when disabled, when there is no data, or on any serialization failure.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function viewDataTree(View $view): ?array
+    {
+        if (! self::collectViewData()) {
+            return null;
+        }
+
+        $data = $view->getData();
+        $data = array_diff_key($data, array_flip(self::VIEW_INTERNAL_KEYS));
+        if ($data === []) {
+            return null;
+        }
+
+        try {
+            $result = (new DumpSerializer(self::viewDataSerializerOptions()))->serialize($data);
+        } catch (Throwable) {
+            return null;
+        }
+
+        $tree = $result['tree'] ?? null;
+
+        return is_array($tree) ? $tree : null;
+    }
+
+    private static function collectViewData(): bool
+    {
+        $perf = config('lookout-tracing.performance');
+
+        return is_array($perf) && filter_var($perf['view_data'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * @return array{max_depth: int, max_children: int, max_string: int, max_total_bytes: int}
+     */
+    private static function viewDataSerializerOptions(): array
+    {
+        $perf = config('lookout-tracing.performance');
+        $opts = is_array($perf) && is_array($perf['view_data_serializer'] ?? null) ? $perf['view_data_serializer'] : [];
+
+        return [
+            'max_depth' => (int) ($opts['max_depth'] ?? 4),
+            'max_children' => (int) ($opts['max_children'] ?? 50),
+            'max_string' => (int) ($opts['max_string'] ?? 2048),
+            'max_total_bytes' => (int) ($opts['max_total_bytes'] ?? 16384),
+        ];
+    }
+
+    /**
+     * Opt-in (performance.view_source) capture of a capped excerpt of the template's own source so
+     * the UI can show what the view looks like. The same template renders many times per request, so
+     * the read is cached per absolute path. Returns null when disabled or the file is unreadable.
+     *
+     * @return array{code: string, truncated: bool}|null
+     */
+    private static function viewSource(View $view): ?array
+    {
+        if (! self::collectViewSource()) {
+            return null;
+        }
+
+        $path = $view->getPath();
+        if (! is_string($path) || $path === '') {
+            return null;
+        }
+        if (array_key_exists($path, self::$viewSourceCache)) {
+            return self::$viewSourceCache[$path];
+        }
+
+        $result = null;
+        if (is_file($path) && is_readable($path)) {
+            [$maxLines, $maxBytes] = self::viewSourceLimits();
+            $raw = @file_get_contents($path, false, null, 0, $maxBytes + 1);
+            if (is_string($raw) && $raw !== '') {
+                $truncated = strlen($raw) > $maxBytes;
+                if ($truncated) {
+                    $raw = substr($raw, 0, $maxBytes);
+                }
+                $lines = explode("\n", $raw);
+                if (count($lines) > $maxLines) {
+                    $lines = array_slice($lines, 0, $maxLines);
+                    $truncated = true;
+                }
+                $result = ['code' => implode("\n", $lines), 'truncated' => $truncated];
+            }
+        }
+
+        return self::$viewSourceCache[$path] = $result;
+    }
+
+    private static function collectViewSource(): bool
+    {
+        $perf = config('lookout-tracing.performance');
+
+        return is_array($perf) && filter_var($perf['view_source'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * @return array{0: int, 1: int} [max_lines, max_bytes]
+     */
+    private static function viewSourceLimits(): array
+    {
+        $perf = config('lookout-tracing.performance');
+        $lines = is_array($perf) ? (int) ($perf['view_source_max_lines'] ?? 60) : 60;
+        $bytes = is_array($perf) ? (int) ($perf['view_source_max_bytes'] ?? 8192) : 8192;
+
+        return [max(1, $lines), max(256, $bytes)];
     }
 
     private static function performanceEnabled(): bool

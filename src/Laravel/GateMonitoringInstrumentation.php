@@ -31,6 +31,10 @@ final class GateMonitoringInstrumentation
                 return;
             }
 
+            if (! self::passesSampling()) {
+                return;
+            }
+
             GateClient::instance()->capture(
                 $ability,
                 $result,
@@ -90,6 +94,25 @@ final class GateMonitoringInstrumentation
         }
 
         return null;
+    }
+
+    /**
+     * Random per-evaluation client-side sampling. Rate 1.0 keeps everything, 0.0 keeps nothing.
+     */
+    private static function passesSampling(): bool
+    {
+        $cfg = config('lookout-tracing.gate_monitoring');
+        $rate = is_array($cfg) ? (float) ($cfg['sample_rate'] ?? 1.0) : 1.0;
+        $rate = max(0.0, min(1.0, $rate));
+
+        if ($rate >= 1.0) {
+            return true;
+        }
+        if ($rate <= 0.0) {
+            return false;
+        }
+
+        return (mt_rand() / mt_getrandmax()) < $rate;
     }
 
     private static function shouldCaptureAbility(string $ability): bool

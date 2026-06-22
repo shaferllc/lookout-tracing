@@ -131,11 +131,39 @@ return [
     */
     'logging' => [
         'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_LOGS_ENABLED'), $laravelQuickStart),
+        'sample_rate' => (float) env('LOOKOUT_LOGS_SAMPLE_RATE', 1.0),
         'flush_on_terminate' => (bool) env('LOOKOUT_LOGS_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_LOGS_MAX_BUFFER', 50),
     ],
 
     'metric_ingest_path' => env('LOOKOUT_METRIC_INGEST_PATH', '/api/ingest/metric'),
+
+    'dump_ingest_path' => env('LOOKOUT_DUMP_INGEST_PATH', '/api/ingest/dump'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Dump capture ingest (lookout_dump + native dump()/dd())
+    |--------------------------------------------------------------------------
+    |
+    | When enabled (opt-in; tie to instrumentation.dump for native dump()/dd() capture), values are
+    | serialized into a normalized, redacted tree and buffered for POST /api/ingest/dump, flushed at
+    | the end of each request. Heavy entries, so batches and per-request counts are kept small. Secrets
+    | are redacted by key before they ever leave the process.
+    |
+    */
+    'dumps' => [
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_DUMPS_ENABLED'), false),
+        'sample_rate' => (float) env('LOOKOUT_DUMPS_SAMPLE_RATE', 1.0),
+        'flush_on_terminate' => (bool) env('LOOKOUT_DUMPS_FLUSH_ON_TERMINATE', true),
+        'max_batch' => (int) env('LOOKOUT_DUMPS_MAX_BATCH', 20),
+        'max_per_request' => (int) env('LOOKOUT_DUMPS_MAX_PER_REQUEST', 100),
+        'serializer' => [
+            'max_depth' => (int) env('LOOKOUT_DUMPS_MAX_DEPTH', 6),
+            'max_children' => (int) env('LOOKOUT_DUMPS_MAX_CHILDREN', 100),
+            'max_string' => (int) env('LOOKOUT_DUMPS_MAX_STRING', 8192),
+            'max_total_bytes' => (int) env('LOOKOUT_DUMPS_MAX_TOTAL_BYTES', 262144),
+        ],
+    ],
 
     'rum_ingest_path' => env('LOOKOUT_RUM_INGEST_PATH', '/api/ingest/rum'),
 
@@ -166,6 +194,7 @@ return [
     */
     'metrics' => [
         'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_METRICS_ENABLED'), $laravelQuickStart),
+        'sample_rate' => (float) env('LOOKOUT_METRICS_SAMPLE_RATE', 1.0),
         'flush_on_terminate' => (bool) env('LOOKOUT_METRICS_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_METRICS_MAX_BUFFER', 500),
     ],
@@ -186,6 +215,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Queue batch monitoring (POST /api/ingest/batch)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel reports Bus batch lifecycle (BatchDispatched, BatchFinished, BatchCanceled)
+    | to Lookout (Telescope Batch Watcher). Defaults on with LOOKOUT_LARAVEL=true; requires a resolved
+    | API key and base URI. Respect project batch_ingest_enabled on the server (403 when off).
+    |
+    */
+    'batch_monitoring' => [
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_BATCH_MONITORING_ENABLED'), $laravelQuickStart),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Mail monitoring (POST /api/ingest/mail)
     |--------------------------------------------------------------------------
     |
@@ -195,6 +238,7 @@ return [
     */
     'mail_monitoring' => [
         'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_MAIL_MONITORING_ENABLED'), $laravelQuickStart),
+        'sample_rate' => (float) env('LOOKOUT_MAIL_MONITORING_SAMPLE_RATE', 1.0),
     ],
 
     /*
@@ -228,6 +272,7 @@ return [
     */
     'notification_monitoring' => [
         'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED'), $laravelQuickStart),
+        'sample_rate' => (float) env('LOOKOUT_NOTIFICATION_MONITORING_SAMPLE_RATE', 1.0),
     ],
 
     /*
@@ -255,6 +300,7 @@ return [
     */
     'model_monitoring' => [
         'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_MODEL_MONITORING_ENABLED'), $laravelQuickStart),
+        'sample_rate' => (float) env('LOOKOUT_MODEL_MONITORING_SAMPLE_RATE', 1.0),
         'namespace_prefix' => env('LOOKOUT_MODEL_MONITORING_NAMESPACE', 'App\\'),
         'allowlist' => [],
         'ignore_prefixes' => ['Illuminate\\', 'Laravel\\', 'Livewire\\'],
@@ -272,9 +318,13 @@ return [
     | ability, allow/deny result, the target type, and the acting user id only (no names/values).
     | Defaults on with LOOKOUT_LARAVEL=true. Respects project gate_ingest_enabled on the server.
     |
+    | Gate checks fire on nearly every request and are high volume; sample_rate randomly keeps
+    | that fraction of evaluations client-side (1.0 = keep all, 0.01 = keep ~1%, 0.0 = keep none).
+    |
     */
     'gate_monitoring' => [
         'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_GATE_MONITORING_ENABLED'), $laravelQuickStart),
+        'sample_rate' => (float) env('LOOKOUT_GATE_MONITORING_SAMPLE_RATE', 1.0),
         'allowlist' => [],
         'ignore_abilities' => [],
         'flush_on_terminate' => (bool) env('LOOKOUT_GATE_MONITORING_FLUSH_ON_TERMINATE', true),
@@ -611,9 +661,31 @@ return [
          * View collector (collectors.view): records one zero-duration view.render span per
          * composing view. High volume — capped per request, and namespaced vendor views
          * (containing "::") are skipped. Add substrings to view_deny to exclude more by name.
+         *
+         * view_data (opt-in, default off): also capture the actual variable VALUES passed to each
+         * view, serialized into a normalized, redacted tree (same engine as dumps — depth/child/
+         * string/byte caps, cycle detection, secret redaction by key). Off by default because values
+         * can carry PII and inflate trace size; the collector otherwise records variable names only.
+         * Keep the serializer caps tight — this runs on every view render.
          */
         'view_max_per_request' => (int) env('LOOKOUT_PERFORMANCE_VIEW_MAX_PER_REQUEST', 50),
         'view_deny' => array_values(array_filter(array_map('trim', explode(',', (string) env('LOOKOUT_PERFORMANCE_VIEW_DENY', ''))))),
+        'view_data' => filter_var(env('LOOKOUT_PERFORMANCE_COLLECT_VIEW_DATA', false), FILTER_VALIDATE_BOOLEAN),
+        'view_data_serializer' => [
+            'max_depth' => (int) env('LOOKOUT_PERFORMANCE_VIEW_DATA_MAX_DEPTH', 4),
+            'max_children' => (int) env('LOOKOUT_PERFORMANCE_VIEW_DATA_MAX_CHILDREN', 50),
+            'max_string' => (int) env('LOOKOUT_PERFORMANCE_VIEW_DATA_MAX_STRING', 2048),
+            'max_total_bytes' => (int) env('LOOKOUT_PERFORMANCE_VIEW_DATA_MAX_TOTAL_BYTES', 16384),
+        ],
+
+        /*
+         * view_source (opt-in, default off): also capture a capped excerpt of the template's own
+         * source (view.source) so the UI can show what the view looks like. The read is cached per
+         * path within a request. Off by default — it touches the filesystem on render.
+         */
+        'view_source' => filter_var(env('LOOKOUT_PERFORMANCE_COLLECT_VIEW_SOURCE', false), FILTER_VALIDATE_BOOLEAN),
+        'view_source_max_lines' => (int) env('LOOKOUT_PERFORMANCE_VIEW_SOURCE_MAX_LINES', 60),
+        'view_source_max_bytes' => (int) env('LOOKOUT_PERFORMANCE_VIEW_SOURCE_MAX_BYTES', 8192),
 
         'database_sample_every' => (int) env('LOOKOUT_PERFORMANCE_DB_SAMPLE_EVERY', 1),
 
@@ -635,6 +707,36 @@ return [
             'response_size' => env('LOOKOUT_PERFORMANCE_CAPTURE_RESPONSE_SIZE', true),
             'client_ip' => env('LOOKOUT_PERFORMANCE_CAPTURE_CLIENT_IP', false),
             'user_id' => env('LOOKOUT_PERFORMANCE_CAPTURE_USER_ID', false),
+
+            /*
+             * Authenticated user display name / email (opt-in, PII). When on, the http.server
+             * root span carries http.user_name / http.user_email read from the auth user model
+             * (name/display_name/username, then email), each truncated to 256 chars. Off by
+             * default — only enable where surfacing who made a request is acceptable.
+             */
+            'user_name' => env('LOOKOUT_PERFORMANCE_CAPTURE_USER_NAME', false),
+            'user_email' => env('LOOKOUT_PERFORMANCE_CAPTURE_USER_EMAIL', false),
+
+            /*
+             * Low-risk request shape, on by default: HTTP method, request/response content
+             * types, and route-model-bound parameters (object params reduced to their route
+             * key — never the model). All run through DataRedactor by key name.
+             */
+            'http_method' => env('LOOKOUT_PERFORMANCE_CAPTURE_HTTP_METHOD', true),
+            'content_type' => env('LOOKOUT_PERFORMANCE_CAPTURE_CONTENT_TYPE', true),
+            'route_params' => env('LOOKOUT_PERFORMANCE_CAPTURE_ROUTE_PARAMS', true),
+
+            /*
+             * PII-bearing payloads, opt-in. Header names and structured (JSON/form) body keys
+             * are redacted by DataRedactor (authorization, cookie, token, password, …); bodies
+             * are truncated to body_max_bytes. Response bodies are captured for textual/JSON
+             * content types only.
+             */
+            'request_headers' => env('LOOKOUT_PERFORMANCE_CAPTURE_REQUEST_HEADERS', false),
+            'response_headers' => env('LOOKOUT_PERFORMANCE_CAPTURE_RESPONSE_HEADERS', false),
+            'request_body' => env('LOOKOUT_PERFORMANCE_CAPTURE_REQUEST_BODY', false),
+            'response_body' => env('LOOKOUT_PERFORMANCE_CAPTURE_RESPONSE_BODY', false),
+            'body_max_bytes' => (int) env('LOOKOUT_PERFORMANCE_CAPTURE_BODY_MAX_BYTES', 8192),
         ],
     ],
 ];
