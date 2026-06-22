@@ -103,7 +103,7 @@ final class Client
         $entries = $this->buffer;
         $this->buffer = [];
 
-        $res = HttpTransport::postJsonWithResponse($url, $key, ['entries' => $entries]);
+        $res = HttpTransport::postJsonWithResponse($url, $key, ['entries' => $entries], clientSampled: true);
 
         return (bool) ($res['ok'] ?? false);
     }

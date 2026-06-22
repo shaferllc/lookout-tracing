@@ -137,7 +137,7 @@ final class DumpIngestClient
         $this->buffer = [];
         $ok = true;
         foreach ($chunks as $chunk) {
-            $res = HttpTransport::postJsonWithResponse($url, $key, ['entries' => $chunk]);
+            $res = HttpTransport::postJsonWithResponse($url, $key, ['entries' => $chunk], clientSampled: true);
             if (($res['status'] ?? 0) !== 202) {
                 $ok = false;
             }

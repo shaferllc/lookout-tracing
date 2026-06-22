@@ -42,7 +42,7 @@ final class ProfileClient
             return false;
         }
 
-        $res = HttpTransport::postJsonWithResponse($url, $key, $body);
+        $res = HttpTransport::postJsonWithResponse($url, $key, $body, clientSampled: true);
 
         return $res['ok'] === true;
     }

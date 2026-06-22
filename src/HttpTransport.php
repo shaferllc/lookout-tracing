@@ -12,15 +12,31 @@ use Lookout\Tracing\Support\IngestSelfMonitoring;
 final class HttpTransport
 {
     /**
+     * Set true at boot when remote config is active (the SDK samples at the dashboard's rates).
+     * Only then is the `X-Lookout-Client-Sampled` header emitted, telling the server to skip its
+     * own sampling for that signal so the rate is applied exactly once.
+     */
+    public static bool $emitClientSampledHeader = false;
+
+    /**
+     * Ingest paths (e.g. "/api/ingest/log") for signals the customer's env force-enables. Requests
+     * to these carry X-Lookout-Env-Forced so the server accepts them even when the dashboard toggle
+     * is off (env > site). Set at boot from the detected env overrides.
+     *
+     * @var list<string>
+     */
+    public static array $envForcedPaths = [];
+
+    /**
      * @param  array<string, mixed>  $body
      */
-    public static function postJson(string $url, string $apiKey, array $body): bool
+    public static function postJson(string $url, string $apiKey, array $body, bool $clientSampled = false): bool
     {
         $json = json_encode($body, JSON_THROW_ON_ERROR);
         $ctx = stream_context_create([
             'http' => [
                 'method' => 'POST',
-                'header' => self::requestHeaders($url, $apiKey),
+                'header' => self::requestHeaders($url, $apiKey, $clientSampled),
                 'content' => $json,
                 'timeout' => 5,
                 'ignore_errors' => true,
@@ -52,13 +68,13 @@ final class HttpTransport
      * @param  array<string, mixed>  $body
      * @return array{ok: bool, status: int|null, data: array<string, mixed>|null}
      */
-    public static function postJsonWithResponse(string $url, string $apiKey, array $body): array
+    public static function postJsonWithResponse(string $url, string $apiKey, array $body, bool $clientSampled = false): array
     {
         $json = json_encode($body, JSON_THROW_ON_ERROR);
         $ctx = stream_context_create([
             'http' => [
                 'method' => 'POST',
-                'header' => self::requestHeaders($url, $apiKey),
+                'header' => self::requestHeaders($url, $apiKey, $clientSampled),
                 'content' => $json,
                 'timeout' => 5,
                 'ignore_errors' => true,
@@ -98,11 +114,12 @@ final class HttpTransport
         int $maxAttempts,
         int $delayMsBetweenAttempts,
         array $retryOnStatuses = [429],
+        bool $clientSampled = false,
     ): array {
         $maxAttempts = max(1, $maxAttempts);
         $last = ['ok' => false, 'status' => null, 'data' => null];
         for ($i = 1; $i <= $maxAttempts; $i++) {
-            $last = self::postJsonWithResponse($url, $apiKey, $body);
+            $last = self::postJsonWithResponse($url, $apiKey, $body, $clientSampled);
             if ($last['ok']) {
                 return $last;
             }
@@ -122,7 +139,18 @@ final class HttpTransport
     /**
      * @return non-empty-string
      */
-    private static function requestHeaders(string $url, string $apiKey): string
+    private static function requestHeaders(string $url, string $apiKey, bool $clientSampled = false): string
+    {
+        return implode("\r\n", self::headerLines($url, $apiKey, $clientSampled));
+    }
+
+    /**
+     * Header lines for an ingest request. Public for testing. Adds `X-Lookout-Client-Sampled`
+     * only when the caller already sampled this signal AND remote config is active.
+     *
+     * @return list<string>
+     */
+    public static function headerLines(string $url, string $apiKey, bool $clientSampled = false): array
     {
         $lines = [
             'Content-Type: application/json',
@@ -131,6 +159,25 @@ final class HttpTransport
             ...IngestSelfMonitoring::internalIngestHeaderLines($url),
         ];
 
-        return implode("\r\n", $lines);
+        if ($clientSampled && self::$emitClientSampledHeader) {
+            $lines[] = 'X-Lookout-Client-Sampled: 1';
+        }
+
+        if (self::urlIsEnvForced($url)) {
+            $lines[] = 'X-Lookout-Env-Forced: 1';
+        }
+
+        return $lines;
+    }
+
+    private static function urlIsEnvForced(string $url): bool
+    {
+        foreach (self::$envForcedPaths as $path) {
+            if ($path !== '' && str_ends_with($url, $path)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

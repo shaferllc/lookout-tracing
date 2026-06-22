@@ -41,6 +41,29 @@ final class RemoteConfig
     }
 
     /**
+     * Server signal key => `lookout-tracing` config path for that signal's client-side sample rate.
+     * ONLY signals that actually sample client-side appear here; the rest (jobs, batches, events,
+     * crons, rum) stay server-sampled, so their dashboard rate is applied at ingest, not in the SDK.
+     *
+     * @return array<string, string>
+     */
+    public static function sampleMap(): array
+    {
+        return [
+            'errors' => 'reporting.sample_rate',
+            'traces' => 'performance.sampler.config.rate',
+            'profiles' => 'profiling.sample_rate',
+            'logs' => 'logging.sample_rate',
+            'metrics' => 'metrics.sample_rate',
+            'dumps' => 'dumps.sample_rate',
+            'mail' => 'mail_monitoring.sample_rate',
+            'notifications' => 'notification_monitoring.sample_rate',
+            'models' => 'model_monitoring.sample_rate',
+            'gates' => 'gate_monitoring.sample_rate',
+        ];
+    }
+
+    /**
      * Pure: turn a decoded /api/config document into `[config-path => bool]` enable overrides.
      * Unknown or missing signals are skipped so a partial/old payload never forces anything off.
      *
@@ -63,12 +86,34 @@ final class RemoteConfig
     }
 
     /**
+     * Pure: turn a decoded /api/config document into `[config-path => float]` sample-rate overrides
+     * for the client-sampling signals only. Rates are clamped to 0.0–1.0.
+     *
+     * @param  array<string, mixed>  $remote
+     * @return array<string, float>
+     */
+    public static function sampleOverrides(array $remote): array
+    {
+        $signals = is_array($remote['signals'] ?? null) ? $remote['signals'] : [];
+
+        $overrides = [];
+        foreach (self::sampleMap() as $serverKey => $configPath) {
+            $signal = $signals[$serverKey] ?? null;
+            if (is_array($signal) && array_key_exists('sample_rate', $signal) && is_numeric($signal['sample_rate'])) {
+                $overrides[$configPath] = max(0.0, min(1.0, (float) $signal['sample_rate']));
+            }
+        }
+
+        return $overrides;
+    }
+
+    /**
      * GET {baseUri}/api/config authenticated with the project API key. Returns the decoded
      * document (`version`, `ttl`, `signals`) or null on any network/parse failure.
      *
      * @return array<string, mixed>|null
      */
-    public static function fetch(string $baseUri, string $apiKey, int $timeoutSeconds = 5): ?array
+    public static function fetch(string $baseUri, string $apiKey, ?string $envOverridesHeader = null, int $timeoutSeconds = 5): ?array
     {
         $base = rtrim(trim($baseUri), '/');
         $key = trim($apiKey);
@@ -76,13 +121,18 @@ final class RemoteConfig
             return null;
         }
 
+        $headers = [
+            'Accept: application/json',
+            'X-Api-Key: '.$key,
+        ];
+        if (is_string($envOverridesHeader) && $envOverridesHeader !== '') {
+            $headers[] = 'X-Lookout-Env-Overrides: '.$envOverridesHeader;
+        }
+
         $context = stream_context_create([
             'http' => [
                 'method' => 'GET',
-                'header' => implode("\r\n", [
-                    'Accept: application/json',
-                    'X-Api-Key: '.$key,
-                ]),
+                'header' => implode("\r\n", $headers),
                 'timeout' => $timeoutSeconds,
                 'ignore_errors' => true,
             ],

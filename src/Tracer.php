@@ -943,6 +943,7 @@ final class Tracer
             $this->traceIngestMaxAttempts,
             $this->traceIngestRetryDelayMs,
             $this->traceIngestRetryStatuses,
+            clientSampled: true,
         );
 
         return [

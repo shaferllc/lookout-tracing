@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Lookout\Tracing\Performance\RateSampler;
+use Lookout\Tracing\Support\EnvOverrides;
 use Lookout\Tracing\Support\LookoutDsn;
 use Lookout\Tracing\Support\MonitoringEnv;
 
@@ -123,6 +124,19 @@ return [
         'enabled' => filter_var(env('LOOKOUT_REMOTE_CONFIG', true), FILTER_VALIDATE_BOOLEAN),
         'ttl' => (int) env('LOOKOUT_REMOTE_CONFIG_TTL', 300),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Env overrides (env > site)
+    |--------------------------------------------------------------------------
+    |
+    | Explicitly-set per-signal env vars (LOOKOUT_*_ENABLED / *_SAMPLE_RATE) win over the
+    | dashboard's remote config. Detected here (in the config file, so it survives config caching)
+    | and applied on top of remote config at boot. Reported to the dashboard so it can show which
+    | signals your environment is pinning.
+    |
+    */
+    'env_overrides' => EnvOverrides::detect(),
 
     'profiling' => [
         'enabled' => false,

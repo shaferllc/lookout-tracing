@@ -63,7 +63,7 @@ final class Client
             return false;
         }
 
-        $res = HttpTransport::postJsonWithResponse($url, $key, $body);
+        $res = HttpTransport::postJsonWithResponse($url, $key, $body, clientSampled: true);
 
         return (bool) ($res['ok'] ?? false);
     }

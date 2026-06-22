@@ -254,7 +254,7 @@ final class MetricsIngestClient
         $chunks = array_chunk($this->buffer, $maxChunk);
         $this->buffer = [];
         foreach ($chunks as $chunk) {
-            $res = HttpTransport::postJsonWithResponse($url, $key, ['entries' => $chunk]);
+            $res = HttpTransport::postJsonWithResponse($url, $key, ['entries' => $chunk], clientSampled: true);
             $status = $res['status'] ?? 0;
             if ($status !== 202) {
                 $ok = false;

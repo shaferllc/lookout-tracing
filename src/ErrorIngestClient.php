@@ -34,6 +34,6 @@ final class ErrorIngestClient
         $url = $base.$path;
         $body = array_merge($payload, ['api_key' => $key]);
 
-        return HttpTransport::postJson($url, $key, $body);
+        return HttpTransport::postJson($url, $key, $body, clientSampled: true);
     }
 }

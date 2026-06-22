@@ -17,6 +17,7 @@ use Lookout\Tracing\Cron\Client as CronClient;
 use Lookout\Tracing\DomainEvent\Client as DomainEventClient;
 use Lookout\Tracing\Dump\DumpIngestClient;
 use Lookout\Tracing\Gate\Client as GateClient;
+use Lookout\Tracing\HttpTransport;
 use Lookout\Tracing\Job\Client as JobIngestClient;
 use Lookout\Tracing\Laravel\Console\InstallLookoutCommand;
 use Lookout\Tracing\Logging\LogIngestClient;
@@ -29,6 +30,7 @@ use Lookout\Tracing\Profiling\ProfileClient;
 use Lookout\Tracing\Profiling\ProfileIngestClient;
 use Lookout\Tracing\Reporting\ErrorReportClient;
 use Lookout\Tracing\Support\DeploymentDefaults;
+use Lookout\Tracing\Support\EnvOverrides;
 use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Support\RemoteConfig;
@@ -64,6 +66,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $router->aliasMiddleware('lookoutTracing.performance', PerformanceMiddleware::class);
 
         $this->applyRemoteSignalConfig();
+        $this->applyEnvOverrides();
         $this->configureTracerFromConfig();
         $this->configureLogIngestFromConfig();
         $this->configureMetricsIngestFromConfig();
@@ -403,6 +406,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             return;
         }
 
+        // In remote-config mode the SDK owns sampling at the dashboard's rates, so ingest
+        // requests carry X-Lookout-Client-Sampled and the server skips re-sampling them.
+        HttpTransport::$emitClientSampledHeader = true;
+
         $cacheKey = RemoteConfig::cacheKey($key);
         $ttl = (int) config('lookout-tracing.remote_config.ttl', 300);
 
@@ -414,7 +421,8 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         }
 
         if (is_array($cached)) {
-            foreach (RemoteConfig::enabledOverrides($cached) as $path => $value) {
+            $overrides = RemoteConfig::enabledOverrides($cached) + RemoteConfig::sampleOverrides($cached);
+            foreach ($overrides as $path => $value) {
                 config(['lookout-tracing.'.$path => $value]);
             }
 
@@ -422,11 +430,13 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         }
 
         // Cold or expired cache: don't block this request — fetch after the response is flushed
-        // so the next request picks up the dashboard's settings.
+        // so the next request picks up the dashboard's settings. Also report our env overrides so
+        // the dashboard can show which signals this app's environment is pinning.
+        $envReport = $this->envOverridesReportHeader();
         /** @var Application $app */
         $app = $this->app;
-        $app->terminating(static function () use ($base, $key, $cacheKey, $ttl): void {
-            $fresh = RemoteConfig::fetch($base, $key);
+        $app->terminating(static function () use ($base, $key, $cacheKey, $ttl, $envReport): void {
+            $fresh = RemoteConfig::fetch($base, $key, $envReport);
             if (is_array($fresh)) {
                 try {
                     cache()->put($cacheKey, $fresh, $ttl);
@@ -435,6 +445,68 @@ final class LookoutTracingServiceProvider extends ServiceProvider
                 }
             }
         });
+    }
+
+    /**
+     * Apply explicit env overrides (LOOKOUT_*) on top of whatever remote config / defaults set,
+     * so env > site. Runs regardless of remote-config mode and also primes the env-forced ingest
+     * marker so force-enabled signals are accepted past a dashboard "off".
+     */
+    protected function applyEnvOverrides(): void
+    {
+        if (! empty(config('lookout-tracing.disabled'))) {
+            return;
+        }
+
+        $env = config('lookout-tracing.env_overrides');
+        if (! is_array($env)) {
+            return;
+        }
+
+        foreach ((array) ($env['enabled'] ?? []) as $type => $value) {
+            $path = RemoteConfig::enabledMap()[$type] ?? null;
+            if ($path !== null) {
+                config(['lookout-tracing.'.$path => (bool) $value]);
+            }
+        }
+        foreach ((array) ($env['sample_rate'] ?? []) as $type => $value) {
+            $path = RemoteConfig::sampleMap()[$type] ?? null;
+            if ($path !== null) {
+                config(['lookout-tracing.'.$path => (float) $value]);
+            }
+        }
+
+        $forcedPaths = [];
+        foreach ((array) ($env['enabled'] ?? []) as $type => $value) {
+            if (! $value) {
+                continue;
+            }
+            $pathKey = EnvOverrides::ingestPathKey((string) $type);
+            $path = $pathKey !== null ? config('lookout-tracing.'.$pathKey) : null;
+            if (is_string($path) && $path !== '') {
+                $forcedPaths[] = '/'.ltrim($path, '/');
+            }
+        }
+        HttpTransport::$envForcedPaths = array_values(array_unique($forcedPaths));
+    }
+
+    /**
+     * Base64(JSON) of this app's env overrides for the X-Lookout-Env-Overrides report header,
+     * or null when nothing is pinned by env.
+     */
+    private function envOverridesReportHeader(): ?string
+    {
+        $env = config('lookout-tracing.env_overrides');
+        if (! is_array($env)) {
+            return null;
+        }
+
+        $report = EnvOverrides::reportMap($env);
+        if ($report === []) {
+            return null;
+        }
+
+        return base64_encode((string) json_encode($report));
     }
 
     protected function configureCronClientFromConfig(): void
