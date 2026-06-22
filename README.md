@@ -403,8 +403,8 @@ The Lookout app surfaces **Traces**, **Transactions**, and **trace detail** in t
 
 | Server behavior | SDK support |
 |-----------------|-------------|
-| **`performance_ingest_enabled`** false | Trace ingest returns **403**. Laravel: enable **`performance.sync_from_api`** (Sanctum token + project id) so **`Tracer::isPerformanceEnabled()`** matches the server on boot; or set **`LOOKOUT_PERFORMANCE_ENABLED=false`**. Auto-flush and queue/cli flush log **`lookout.tracing.trace_forbidden`** when **`performance.log_forbidden_trace_ingest`** is true (default). |
-| **`GET /api/v1/projects/{id}`** | **`LookoutManagementApi::fetchProject()`** + sync config (see `lookout-tracing.php` **`performance.sync_from_api`**). |
+| **`performance_ingest_enabled`** false | Trace ingest returns **403**. The SDK reads this from remote config (see below) and stops sending traces to match the dashboard — no 403 spam. Override locally with **`LOOKOUT_PERFORMANCE_ENABLED`** (env > site); when env forces it on, the SDK sends **`X-Lookout-Env-Forced`** so the server accepts it. Auto-flush and queue/cli flush log **`lookout.tracing.trace_forbidden`** when **`performance.log_forbidden_trace_ingest`** is true (default). |
+| **`GET /api/config`** | **`RemoteConfig::fetch()`** — per-project enabled flags + sample rates, cached and applied at boot (replaces the old `performance.sync_from_api` / `GET /api/v1/projects/{id}` path). |
 | **429 / flaky network** | **`trace_ingest.max_attempts`**, **`retry_delay_ms`**, **`retry_statuses`** (env: **`LOOKOUT_TRACE_INGEST_*`**) — **`Tracer::flushWithResult()`** uses **`HttpTransport::postJsonWithResponseRetries()`**. **403** is never retried. |
 
 ### Implemented building blocks

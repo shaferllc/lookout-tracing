@@ -28,6 +28,13 @@ final class HttpTransport
     public static array $envForcedPaths = [];
 
     /**
+     * The most recent `config_version` an ingest response reported this request. Compared at boot to
+     * the cached config's version so a dashboard change is picked up within one ingest round-trip
+     * instead of waiting for the cache TTL to expire.
+     */
+    public static ?string $lastSeenConfigVersion = null;
+
+    /**
      * @param  array<string, mixed>  $body
      */
     public static function postJson(string $url, string $apiKey, array $body, bool $clientSampled = false): bool
@@ -47,6 +54,9 @@ final class HttpTransport
         if ($result === false) {
             return false;
         }
+
+        $decoded = json_decode($result, true);
+        self::rememberConfigVersion(is_array($decoded) ? $decoded : null);
 
         if (! isset($http_response_header) || ! is_array($http_response_header)) {
             return true;
@@ -96,6 +106,7 @@ final class HttpTransport
 
         $decoded = json_decode($result, true);
         $data = is_array($decoded) ? $decoded : null;
+        self::rememberConfigVersion($data);
         $ok = $status !== null && $status >= 200 && $status < 300;
 
         return ['ok' => $ok, 'status' => $status, 'data' => $data];
@@ -168,6 +179,19 @@ final class HttpTransport
         }
 
         return $lines;
+    }
+
+    /**
+     * Record the `config_version` from an ingest response body, if present.
+     *
+     * @param  array<string, mixed>|null  $data
+     */
+    public static function rememberConfigVersion(?array $data): void
+    {
+        $version = $data['config_version'] ?? null;
+        if (is_string($version) && $version !== '') {
+            self::$lastSeenConfigVersion = $version;
+        }
     }
 
     private static function urlIsEnvForced(string $url): bool

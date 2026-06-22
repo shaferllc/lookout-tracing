@@ -420,21 +420,40 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             $cached = null;
         }
 
+        // Report our env overrides on the fetch so the dashboard can show what env pins.
+        $envReport = $this->envOverridesReportHeader();
+        /** @var Application $app */
+        $app = $this->app;
+
         if (is_array($cached)) {
             $overrides = RemoteConfig::enabledOverrides($cached) + RemoteConfig::sampleOverrides($cached);
             foreach ($overrides as $path => $value) {
                 config(['lookout-tracing.'.$path => $value]);
             }
 
+            // Early refresh: if an ingest response this request reported a newer config_version than
+            // the cached one, refresh after the response so the change lands next request (not at TTL).
+            $cachedVersion = is_string($cached['version'] ?? null) ? $cached['version'] : null;
+            $app->terminating(static function () use ($base, $key, $cacheKey, $ttl, $envReport, $cachedVersion): void {
+                $seen = HttpTransport::$lastSeenConfigVersion;
+                if ($seen === null || $seen === $cachedVersion) {
+                    return;
+                }
+                $fresh = RemoteConfig::fetch($base, $key, $envReport);
+                if (is_array($fresh)) {
+                    try {
+                        cache()->put($cacheKey, $fresh, $ttl);
+                    } catch (\Throwable) {
+                        // Best effort; the next request will try again.
+                    }
+                }
+            });
+
             return;
         }
 
         // Cold or expired cache: don't block this request — fetch after the response is flushed
-        // so the next request picks up the dashboard's settings. Also report our env overrides so
-        // the dashboard can show which signals this app's environment is pinning.
-        $envReport = $this->envOverridesReportHeader();
-        /** @var Application $app */
-        $app = $this->app;
+        // so the next request picks up the dashboard's settings.
         $app->terminating(static function () use ($base, $key, $cacheKey, $ttl, $envReport): void {
             $fresh = RemoteConfig::fetch($base, $key, $envReport);
             if (is_array($fresh)) {
