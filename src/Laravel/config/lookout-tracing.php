@@ -125,7 +125,7 @@ return [
     ],
 
     'profiling' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_ENABLED'), false),
+        'enabled' => false,
         'sample_rate' => (float) env('LOOKOUT_PROFILING_SAMPLE_RATE', $laravelQuickStart ? 0.05 : 0.0),
         'period_us' => (int) env('LOOKOUT_PROFILING_PERIOD_US', 10000),
         'event_type' => env('LOOKOUT_PROFILING_EVENT_TYPE', 'wall'),
@@ -147,7 +147,7 @@ return [
     |
     */
     'logging' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_LOGS_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'sample_rate' => (float) env('LOOKOUT_LOGS_SAMPLE_RATE', 1.0),
         'flush_on_terminate' => (bool) env('LOOKOUT_LOGS_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_LOGS_MAX_BUFFER', 50),
@@ -169,7 +169,7 @@ return [
     |
     */
     'dumps' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_DUMPS_ENABLED'), false),
+        'enabled' => false,
         'sample_rate' => (float) env('LOOKOUT_DUMPS_SAMPLE_RATE', 1.0),
         'flush_on_terminate' => (bool) env('LOOKOUT_DUMPS_FLUSH_ON_TERMINATE', true),
         'max_batch' => (int) env('LOOKOUT_DUMPS_MAX_BATCH', 20),
@@ -195,7 +195,7 @@ return [
     |
     */
     'rum' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_RUM_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'ingest_path' => env('LOOKOUT_RUM_INGEST_PATH', '/api/ingest/rum'),
         'livewire_navigate' => filter_var(env('LOOKOUT_RUM_LIVEWIRE_NAVIGATE', true), FILTER_VALIDATE_BOOLEAN),
     ],
@@ -210,7 +210,7 @@ return [
     |
     */
     'metrics' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_METRICS_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'sample_rate' => (float) env('LOOKOUT_METRICS_SAMPLE_RATE', 1.0),
         'flush_on_terminate' => (bool) env('LOOKOUT_METRICS_FLUSH_ON_TERMINATE', true),
         'max_buffer' => (int) env('LOOKOUT_METRICS_MAX_BUFFER', 500),
@@ -227,7 +227,7 @@ return [
     |
     */
     'job_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_JOB_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
     ],
 
     /*
@@ -241,7 +241,7 @@ return [
     |
     */
     'batch_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_BATCH_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
     ],
 
     /*
@@ -254,7 +254,7 @@ return [
     |
     */
     'mail_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_MAIL_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'sample_rate' => (float) env('LOOKOUT_MAIL_MONITORING_SAMPLE_RATE', 1.0),
     ],
 
@@ -269,7 +269,7 @@ return [
     |
     */
     'event_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_EVENT_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'wildcard' => (bool) env('LOOKOUT_EVENT_MONITORING_WILDCARD', false),
         'allowlist' => [],
         'ignore_prefixes' => ['Illuminate\\', 'Laravel\\', 'Livewire\\'],
@@ -288,7 +288,7 @@ return [
     |
     */
     'notification_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_NOTIFICATION_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'sample_rate' => (float) env('LOOKOUT_NOTIFICATION_MONITORING_SAMPLE_RATE', 1.0),
     ],
 
@@ -302,7 +302,7 @@ return [
     |
     */
     'cron_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_CRON_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
     ],
 
     /*
@@ -316,7 +316,7 @@ return [
     |
     */
     'model_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_MODEL_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'sample_rate' => (float) env('LOOKOUT_MODEL_MONITORING_SAMPLE_RATE', 1.0),
         'namespace_prefix' => env('LOOKOUT_MODEL_MONITORING_NAMESPACE', 'App\\'),
         'allowlist' => [],
@@ -340,7 +340,7 @@ return [
     |
     */
     'gate_monitoring' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_GATE_MONITORING_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
         'sample_rate' => (float) env('LOOKOUT_GATE_MONITORING_SAMPLE_RATE', 1.0),
         'allowlist' => [],
         'ignore_abilities' => [],
@@ -577,7 +577,7 @@ return [
     |
     */
     'performance' => [
-        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PERFORMANCE_ENABLED'), $laravelQuickStart),
+        'enabled' => $laravelQuickStart,
 
         /*
          * When true, log a warning if trace flush returns HTTP 403 (project disabled performance ingest).
