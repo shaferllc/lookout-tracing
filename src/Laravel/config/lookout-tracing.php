@@ -107,6 +107,23 @@ return [
     | so keep sample_rate low in production. event_type: 'wall' (default) or 'cpu'.
     |
     */
+    /*
+    |--------------------------------------------------------------------------
+    | Remote config
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, the SDK fetches GET /api/config from Lookout (authenticated with this
+    | project's api_key) and lets the dashboard decide which signals are captured/sent. The
+    | config is cached for `ttl` seconds and refreshed after the response (never blocking a
+    | request); until the first fetch lands, the built-in defaults below apply. This replaces
+    | the per-signal LOOKOUT_*_MONITORING_ENABLED env toggles and the old performance sync.
+    |
+    */
+    'remote_config' => [
+        'enabled' => filter_var(env('LOOKOUT_REMOTE_CONFIG', true), FILTER_VALIDATE_BOOLEAN),
+        'ttl' => (int) env('LOOKOUT_REMOTE_CONFIG_TTL', 300),
+    ],
+
     'profiling' => [
         'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_ENABLED'), false),
         'sample_rate' => (float) env('LOOKOUT_PROFILING_SAMPLE_RATE', $laravelQuickStart ? 0.05 : 0.0),
@@ -566,17 +583,6 @@ return [
          * When true, log a warning if trace flush returns HTTP 403 (project disabled performance ingest).
          */
         'log_forbidden_trace_ingest' => env('LOOKOUT_LOG_FORBIDDEN_TRACE_INGEST', true),
-
-        /*
-         * Optional: on each boot, GET /api/v1/projects/{id} with a Sanctum bearer token and override
-         * the tracer’s performance_enabled flag from performance_ingest_enabled (so LOOKOUT_PERFORMANCE_ENABLED
-         * can stay true in .env while the server gate turns recording off without 403 spam).
-         */
-        'sync_from_api' => [
-            'enabled' => env('LOOKOUT_PERFORMANCE_SYNC_FROM_API', false),
-            'bearer_token' => env('LOOKOUT_SYNC_API_TOKEN'),
-            'project_id' => env('LOOKOUT_SYNC_PROJECT_ID'),
-        ],
 
         'middleware_auto_register' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PERFORMANCE_AUTO_MIDDLEWARE'), $laravelQuickStart),
 

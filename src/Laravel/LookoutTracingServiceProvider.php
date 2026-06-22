@@ -30,8 +30,8 @@ use Lookout\Tracing\Profiling\ProfileIngestClient;
 use Lookout\Tracing\Reporting\ErrorReportClient;
 use Lookout\Tracing\Support\DeploymentDefaults;
 use Lookout\Tracing\Support\IngestSelfMonitoring;
-use Lookout\Tracing\Support\LookoutManagementApi;
 use Lookout\Tracing\Support\MemoryPeakReset;
+use Lookout\Tracing\Support\RemoteConfig;
 use Lookout\Tracing\Tracer;
 
 final class LookoutTracingServiceProvider extends ServiceProvider
@@ -63,10 +63,10 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $router->aliasMiddleware('lookoutTracing.continueTrace', ContinueTraceMiddleware::class);
         $router->aliasMiddleware('lookoutTracing.performance', PerformanceMiddleware::class);
 
+        $this->applyRemoteSignalConfig();
         $this->configureTracerFromConfig();
         $this->configureLogIngestFromConfig();
         $this->configureMetricsIngestFromConfig();
-        $this->overridePerformanceEnabledFromManagementApi();
         $this->configureCronClientFromConfig();
         $this->configureJobClientFromConfig();
         $this->configureBatchClientFromConfig();
@@ -382,32 +382,59 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         return null;
     }
 
-    protected function overridePerformanceEnabledFromManagementApi(): void
+    /**
+     * Override per-signal enable flags from the project's server-side config (GET /api/config),
+     * making the Lookout dashboard the source of truth for what this app captures and sends.
+     * Reads a cached copy synchronously (never blocks the request) and refreshes it after the
+     * response is sent. Until the first config is cached, the built-in config defaults apply.
+     */
+    protected function applyRemoteSignalConfig(): void
     {
-        $cfg = config('lookout-tracing');
-        if (! is_array($cfg)) {
+        if (! filter_var(config('lookout-tracing.remote_config.enabled', true), FILTER_VALIDATE_BOOLEAN)) {
             return;
         }
-        $perf = is_array($cfg['performance'] ?? null) ? $cfg['performance'] : [];
-        $sync = is_array($perf['sync_from_api'] ?? null) ? $perf['sync_from_api'] : [];
-        if (empty($sync['enabled'])) {
-            return;
-        }
-        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
-        $token = isset($sync['bearer_token']) && is_string($sync['bearer_token']) ? trim($sync['bearer_token']) : '';
-        $projectId = isset($sync['project_id']) && is_string($sync['project_id']) ? trim($sync['project_id']) : '';
-        if ($base === '' || $token === '' || $projectId === '') {
+        if (! empty(config('lookout-tracing.disabled'))) {
             return;
         }
 
-        $data = LookoutManagementApi::fetchProject($base, $token, $projectId);
-        if ($data === null || ! array_key_exists('performance_ingest_enabled', $data)) {
+        $base = trim((string) config('lookout-tracing.base_uri', ''));
+        $key = trim((string) config('lookout-tracing.api_key', ''));
+        if ($base === '' || $key === '') {
             return;
         }
 
-        Tracer::instance()->configure([
-            'performance_enabled' => (bool) $data['performance_ingest_enabled'],
-        ]);
+        $cacheKey = RemoteConfig::cacheKey($key);
+        $ttl = (int) config('lookout-tracing.remote_config.ttl', 300);
+
+        $cached = null;
+        try {
+            $cached = cache()->get($cacheKey);
+        } catch (\Throwable) {
+            $cached = null;
+        }
+
+        if (is_array($cached)) {
+            foreach (RemoteConfig::enabledOverrides($cached) as $path => $value) {
+                config(['lookout-tracing.'.$path => $value]);
+            }
+
+            return;
+        }
+
+        // Cold or expired cache: don't block this request — fetch after the response is flushed
+        // so the next request picks up the dashboard's settings.
+        /** @var Application $app */
+        $app = $this->app;
+        $app->terminating(static function () use ($base, $key, $cacheKey, $ttl): void {
+            $fresh = RemoteConfig::fetch($base, $key);
+            if (is_array($fresh)) {
+                try {
+                    cache()->put($cacheKey, $fresh, $ttl);
+                } catch (\Throwable) {
+                    // Best effort; the next request will try again.
+                }
+            }
+        });
     }
 
     protected function configureCronClientFromConfig(): void
