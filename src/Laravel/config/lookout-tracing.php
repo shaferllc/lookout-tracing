@@ -195,7 +195,7 @@ return [
     |
     */
     'dumps' => [
-        'enabled' => false,
+        'enabled' => env('LOOKOUT_DUMPS_ENABLED', false),
         'sample_rate' => (float) env('LOOKOUT_DUMPS_SAMPLE_RATE', 1.0),
         'flush_on_terminate' => (bool) env('LOOKOUT_DUMPS_FLUSH_ON_TERMINATE', true),
         'max_batch' => (int) env('LOOKOUT_DUMPS_MAX_BATCH', 20),
