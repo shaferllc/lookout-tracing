@@ -432,6 +432,9 @@ final class LookoutTracingServiceProvider extends ServiceProvider
                 config(['lookout-tracing.'.$path => $value]);
             }
 
+            // Ignored-error suppression keys: the report client drops matching exceptions before send.
+            config(['lookout-tracing.reporting.suppressed_keys' => RemoteConfig::suppressedKeys($cached)]);
+
             // Early refresh: if an ingest response this request reported a newer config_version than
             // the cached one, refresh after the response so the change lands next request (not at TTL).
             $cachedVersion = is_string($cached['version'] ?? null) ? $cached['version'] : null;

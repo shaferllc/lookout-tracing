@@ -108,8 +108,33 @@ final class RemoteConfig
     }
 
     /**
+     * Pure: extract the ignored-error suppression keys from a decoded /api/config document.
+     * Each is a client suppression key ({@see ErrorSuppressionKey}); the SDK drops exceptions whose
+     * computed key is in this list. Non-string entries are skipped so a malformed payload is safe.
+     *
+     * @param  array<string, mixed>  $remote
+     * @return list<string>
+     */
+    public static function suppressedKeys(array $remote): array
+    {
+        $raw = $remote['suppress'] ?? null;
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $keys = [];
+        foreach ($raw as $key) {
+            if (is_string($key) && $key !== '') {
+                $keys[] = $key;
+            }
+        }
+
+        return array_values(array_unique($keys));
+    }
+
+    /**
      * GET {baseUri}/api/config authenticated with the project API key. Returns the decoded
-     * document (`version`, `ttl`, `signals`) or null on any network/parse failure.
+     * document (`version`, `ttl`, `signals`, `suppress`) or null on any network/parse failure.
      *
      * @return array<string, mixed>|null
      */

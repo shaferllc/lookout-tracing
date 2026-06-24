@@ -538,6 +538,12 @@ return [
         'sample_rate' => (float) env('LOOKOUT_REPORT_SAMPLE_RATE', 1.0),
 
         /*
+         * Client suppression keys for errors ignored on the dashboard. Populated at boot from the
+         * remote /api/config `suppress` list; matching exceptions are dropped before send. Leave empty.
+         */
+        'suppressed_keys' => [],
+
+        /*
          * Optional list of ReportMiddlewareInterface class names (container-resolved).
          * Empty = default stack (application + request + git + attributes + solutions).
          */

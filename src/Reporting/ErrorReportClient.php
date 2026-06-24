@@ -9,6 +9,7 @@ use Lookout\Tracing\BreadcrumbBuffer;
 use Lookout\Tracing\ErrorIngestClient;
 use Lookout\Tracing\Id;
 use Lookout\Tracing\Support\DataRedactor;
+use Lookout\Tracing\Support\ErrorSuppressionKey;
 use Lookout\Tracing\ThrowableSupport;
 use Lookout\Tracing\Tracer;
 use Throwable;
@@ -36,6 +37,13 @@ final class ErrorReportClient
 
     /** @var list<ReportMiddlewareInterface> */
     private array $middleware = [];
+
+    /**
+     * Suppression keys (from the dashboard's ignored error groups) as a lookup set: key => true.
+     *
+     * @var array<string, true>
+     */
+    private array $suppressedKeys = [];
 
     /** @var array{api_key: string, base_uri: string, error_ingest_path?: string}|null */
     private ?array $transport = null;
@@ -87,6 +95,7 @@ final class ErrorReportClient
         $this->truncator = new ReportTruncator($limits);
 
         $this->middleware = $this->resolveMiddleware($rep);
+        $this->suppressedKeys = self::indexSuppressedKeys($rep['suppressed_keys'] ?? []);
 
         $apiKey = isset($config['api_key']) && is_string($config['api_key']) ? $config['api_key'] : '';
         $base = isset($config['base_uri']) && is_string($config['base_uri']) ? rtrim($config['base_uri'], '/') : '';
@@ -204,6 +213,12 @@ final class ErrorReportClient
         }
         $payload = $this->truncator->trim($payload);
 
+        // Drop errors the dashboard has ignored so they stop re-ingesting (matched on the final
+        // payload's class + message, which is exactly what the server stored and keyed off).
+        if ($this->isSuppressed($payload)) {
+            return;
+        }
+
         if ($this->sendImmediately || ! $this->queueEnabled) {
             ErrorIngestClient::send($payload, $this->transport);
 
@@ -268,6 +283,10 @@ final class ErrorReportClient
             self::$lastOccurrenceUuid = trim($existingOu);
         }
 
+        if ($this->isSuppressed($payload)) {
+            return;
+        }
+
         if ($this->sendImmediately || ! $this->queueEnabled) {
             ErrorIngestClient::send($payload, $this->transport);
 
@@ -275,6 +294,44 @@ final class ErrorReportClient
         }
 
         $this->queue->push($payload);
+    }
+
+    /**
+     * Whether this payload's error has been ignored on the dashboard (its client suppression key is
+     * in the remote-config suppression set). No keys configured → never suppresses.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function isSuppressed(array $payload): bool
+    {
+        if ($this->suppressedKeys === []) {
+            return false;
+        }
+
+        $class = isset($payload['exception_class']) && is_string($payload['exception_class']) ? $payload['exception_class'] : null;
+        $message = isset($payload['message']) && is_string($payload['message']) ? $payload['message'] : null;
+
+        return isset($this->suppressedKeys[ErrorSuppressionKey::compute($class, $message)]);
+    }
+
+    /**
+     * @param  mixed  $keys
+     * @return array<string, true>
+     */
+    private static function indexSuppressedKeys($keys): array
+    {
+        if (! is_array($keys)) {
+            return [];
+        }
+
+        $index = [];
+        foreach ($keys as $key) {
+            if (is_string($key) && $key !== '') {
+                $index[$key] = true;
+            }
+        }
+
+        return $index;
     }
 
     public function flush(): void
