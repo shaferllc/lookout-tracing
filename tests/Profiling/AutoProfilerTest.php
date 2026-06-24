@@ -7,10 +7,16 @@ namespace Lookout\Tracing\Tests\Profiling;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
 use Lookout\Tracing\Profiling\ProfileIngestClient;
+use Lookout\Tracing\Tracer;
 use PHPUnit\Framework\TestCase;
 
 final class AutoProfilerTest extends TestCase
 {
+    /** Compact "{trace_id}-{span_id}-{sampled}" header; trailing 1/0 sets the sampled bit. */
+    private const SAMPLED_TRACEPARENT = '0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-1';
+
+    private const UNSAMPLED_TRACEPARENT = '0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-0';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -18,6 +24,7 @@ final class AutoProfilerTest extends TestCase
         ProfileClient::resetForTesting();
         ProfileIngestClient::resetForTesting();
         ProfileIngestClient::configure(['manual_pulse_fallback' => false]);
+        Tracer::resetForTesting();
     }
 
     protected function tearDown(): void
@@ -25,6 +32,7 @@ final class AutoProfilerTest extends TestCase
         AutoProfiler::resetForTesting();
         ProfileClient::resetForTesting();
         ProfileIngestClient::resetForTesting();
+        Tracer::resetForTesting();
         parent::tearDown();
     }
 
@@ -51,12 +59,39 @@ final class AutoProfilerTest extends TestCase
 
     public function test_sample_rate_threshold_excludes_high_draw(): void
     {
-        AutoProfiler::configure(['enabled' => true, 'sample_rate' => 0.25]);
+        AutoProfiler::configure(['enabled' => true, 'sample_rate' => 0.25, 'follow_trace_sampling' => false]);
         AutoProfiler::forceSampleFractionForTesting(0.5); // 0.5 >= 0.25 -> not sampled
+
+        $this->assertFalse(AutoProfiler::shouldProfileCurrentTransaction());
 
         AutoProfiler::maybeStart();
 
         $this->assertFalse(AutoProfiler::isRunning());
+    }
+
+    public function test_follows_trace_sampling_profiles_recorded_traces(): void
+    {
+        AutoProfiler::configure(['enabled' => true, 'follow_trace_sampling' => true, 'sample_rate' => 0.0]);
+
+        Tracer::instance()->continueTrace(self::SAMPLED_TRACEPARENT, null);
+        $this->assertTrue(
+            AutoProfiler::shouldProfileCurrentTransaction(),
+            'a recorded (sampled) trace should be profiled even with sample_rate 0'
+        );
+
+        Tracer::instance()->continueTrace(self::UNSAMPLED_TRACEPARENT, null);
+        $this->assertFalse(
+            AutoProfiler::shouldProfileCurrentTransaction(),
+            'an unsampled trace must not be profiled'
+        );
+    }
+
+    public function test_does_not_profile_when_disabled_even_if_trace_recorded(): void
+    {
+        AutoProfiler::configure(['enabled' => false, 'follow_trace_sampling' => true]);
+        Tracer::instance()->continueTrace(self::SAMPLED_TRACEPARENT, null);
+
+        $this->assertFalse(AutoProfiler::shouldProfileCurrentTransaction());
     }
 
     public function test_build_payload_merges_context_and_config_defaults(): void

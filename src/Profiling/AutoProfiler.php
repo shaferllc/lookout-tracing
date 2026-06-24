@@ -24,6 +24,13 @@ final class AutoProfiler
 
     private static float $sampleRate = 0.0;
 
+    /**
+     * When true, profiling follows the trace sampling decision: every transaction whose trace is
+     * being recorded is profiled (so each sampled trace carries a linkable CPU profile) and the
+     * independent {@see $sampleRate} draw is ignored. When false, the legacy independent draw applies.
+     */
+    private static bool $followTraceSampling = true;
+
     private static int $periodUs = 10_000;
 
     /** @var 'wall'|'cpu' */
@@ -49,6 +56,7 @@ final class AutoProfiler
      * @param array{
      *     enabled?: bool,
      *     sample_rate?: float|int|string,
+     *     follow_trace_sampling?: bool,
      *     period_us?: int|string,
      *     event_type?: string,
      *     min_duration_ms?: int|string,
@@ -64,6 +72,9 @@ final class AutoProfiler
         }
         if (array_key_exists('sample_rate', $cfg)) {
             self::$sampleRate = max(0.0, min(1.0, (float) $cfg['sample_rate']));
+        }
+        if (array_key_exists('follow_trace_sampling', $cfg)) {
+            self::$followTraceSampling = (bool) $cfg['follow_trace_sampling'];
         }
         if (array_key_exists('period_us', $cfg)) {
             self::$periodUs = max(1, (int) $cfg['period_us']);
@@ -97,10 +108,7 @@ final class AutoProfiler
     public static function maybeStart(): void
     {
         try {
-            if (! self::$enabled || self::$capture !== null) {
-                return;
-            }
-            if (self::$sampleRate <= 0.0 || ! self::shouldSample()) {
+            if (self::$capture !== null || ! self::shouldProfileCurrentTransaction()) {
                 return;
             }
 
@@ -194,6 +202,7 @@ final class AutoProfiler
     {
         self::$enabled = false;
         self::$sampleRate = 0.0;
+        self::$followTraceSampling = true;
         self::$periodUs = 10_000;
         self::$eventType = 'wall';
         self::$minDurationMs = 0;
@@ -209,6 +218,32 @@ final class AutoProfiler
     public static function forceSampleFractionForTesting(?float $fraction): void
     {
         self::$forcedFraction = $fraction;
+    }
+
+    /**
+     * Whether the current transaction should be profiled. When following trace sampling, profile
+     * exactly the transactions whose trace is being recorded; otherwise apply the legacy independent
+     * sample-rate draw. Public so the gate can be asserted in tests without the Excimer extension.
+     */
+    public static function shouldProfileCurrentTransaction(): bool
+    {
+        if (! self::$enabled) {
+            return false;
+        }
+
+        if (self::$followTraceSampling) {
+            try {
+                return Tracer::instance()->isSpanRecordingEnabled();
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        if (self::$sampleRate <= 0.0) {
+            return false;
+        }
+
+        return self::shouldSample();
     }
 
     private static function shouldSample(): bool

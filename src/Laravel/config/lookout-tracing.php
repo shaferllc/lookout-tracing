@@ -139,8 +139,15 @@ return [
     'env_overrides' => EnvOverrides::detect(),
 
     'profiling' => [
-        'enabled' => false,
+        // On by default for standard (quick-start) installs, like the other collectors. Safe without the
+        // Excimer extension (capture is a guarded no-op); with Excimer + follow_trace_sampling, every
+        // sampled trace gets a linkable CPU profile. Set LOOKOUT_PROFILING_ENABLED=false to opt out.
+        'enabled' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_ENABLED'), $laravelQuickStart),
         'sample_rate' => (float) env('LOOKOUT_PROFILING_SAMPLE_RATE', $laravelQuickStart ? 0.05 : 0.0),
+        // When true (default), profiling follows the trace sampling decision: every transaction whose
+        // trace is recorded is profiled, so each sampled trace carries a linkable CPU profile and
+        // `sample_rate` is ignored. Set false to fall back to the independent `sample_rate` draw.
+        'follow_trace_sampling' => MonitoringEnv::resolveEnabled(env('LOOKOUT_PROFILING_FOLLOW_TRACE_SAMPLING'), true),
         'period_us' => (int) env('LOOKOUT_PROFILING_PERIOD_US', 10000),
         'event_type' => env('LOOKOUT_PROFILING_EVENT_TYPE', 'wall'),
         'min_duration_ms' => (int) env('LOOKOUT_PROFILING_MIN_DURATION_MS', 0),
@@ -319,9 +326,15 @@ return [
     | When enabled, {@see Lookout\Tracing\Cron\Client} sends monitor check-ins.
     | Defaults on with LOOKOUT_LARAVEL=true. No server-side project gate (always accepted when keyed).
     |
+    | 'auto_schedule' hooks Laravel's scheduler so every scheduled task auto-reports in_progress
+    | on start and ok/error on finish (with its cron expression) — no per-task wrapping needed.
+    | 'checkin_margin' is the grace period (minutes) sent when a monitor is first created.
+    |
     */
     'cron_monitoring' => [
         'enabled' => $laravelQuickStart,
+        'auto_schedule' => filter_var((string) env('LOOKOUT_CRON_AUTO_SCHEDULE', $laravelQuickStart ? 'true' : 'false'), FILTER_VALIDATE_BOOLEAN),
+        'checkin_margin' => (int) env('LOOKOUT_CRON_CHECKIN_MARGIN', 5),
     ],
 
     /*

@@ -71,6 +71,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->configureLogIngestFromConfig();
         $this->configureMetricsIngestFromConfig();
         $this->configureCronClientFromConfig();
+        $this->configureScheduleMonitoringFromConfig();
         $this->configureJobClientFromConfig();
         $this->configureBatchClientFromConfig();
         $this->configureMailClientFromConfig();
@@ -545,6 +546,27 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         ]);
     }
 
+    protected function configureScheduleMonitoringFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $cronCfg = is_array($cfg['cron_monitoring'] ?? null) ? $cfg['cron_monitoring'] : [];
+        if (! ($cronCfg['auto_schedule'] ?? false)) {
+            return;
+        }
+
+        $margin = isset($cronCfg['checkin_margin']) && is_numeric($cronCfg['checkin_margin'])
+            ? (int) $cronCfg['checkin_margin']
+            : null;
+
+        /** @var Dispatcher $events */
+        $events = $this->app->make(Dispatcher::class);
+        ScheduleMonitoringInstrumentation::register($events, $margin);
+    }
+
     protected function configureJobClientFromConfig(): void
     {
         $cfg = config('lookout-tracing');
@@ -744,6 +766,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         AutoProfiler::configure([
             'enabled' => (bool) ($p['enabled'] ?? false),
             'sample_rate' => (float) ($p['sample_rate'] ?? 0.0),
+            'follow_trace_sampling' => (bool) ($p['follow_trace_sampling'] ?? true),
             'period_us' => (int) ($p['period_us'] ?? 10000),
             'event_type' => is_string($p['event_type'] ?? null) ? $p['event_type'] : 'wall',
             'min_duration_ms' => (int) ($p['min_duration_ms'] ?? 0),
