@@ -120,6 +120,8 @@ final class PerformanceInstrumentation
 
     private static int $cacheInsightForgets = 0;
 
+    private static int $cacheLockAttemptCount = 0;
+
     private static int $cacheManyGetBatches = 0;
 
     private static int $cacheManyPutBatches = 0;
@@ -207,6 +209,7 @@ final class PerformanceInstrumentation
         self::$cacheInsightMisses = 0;
         self::$cacheInsightSets = 0;
         self::$cacheInsightForgets = 0;
+        self::$cacheLockAttemptCount = 0;
         self::$cacheManyGetBatches = 0;
         self::$cacheManyPutBatches = 0;
         self::$httpClientCount = 0;
@@ -581,6 +584,7 @@ final class PerformanceInstrumentation
         }
         if ($info['lock_related']) {
             $data['cache.lock_attempt'] = true;
+            self::$cacheLockAttemptCount++;
         }
 
         return $data;
@@ -1577,6 +1581,9 @@ final class PerformanceInstrumentation
                 if ($looked > 0) {
                     $data['cache.hit_ratio'] = round(self::$cacheInsightHits / $looked, 4);
                 }
+            }
+            if (self::$cacheLockAttemptCount > 0) {
+                $data['cache.lock_attempt_count'] = self::$cacheLockAttemptCount;
             }
         }
 
