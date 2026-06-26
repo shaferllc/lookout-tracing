@@ -67,6 +67,29 @@ final class PerformanceInstrumentation
     /** @var array<string, int> */
     private static array $sqlFingerprintCounts = [];
 
+    /**
+     * First-seen, truncated SQL keyed by fingerprint — the sample we attach to the root span so the
+     * server can render the offending statement for a suspected N+1.
+     *
+     * @var array<string, string>
+     */
+    private static array $sqlFingerprintSample = [];
+
+    /**
+     * Call frames captured the first time each fingerprint was seen. Captured once per fingerprint
+     * (not per execution) so a hot loop of repeated queries stays cheap.
+     *
+     * @var array<string, list<array{function: string, call: string, class?: string, file: string, line: int}>>
+     */
+    private static array $sqlFingerprintFrames = [];
+
+    private static float $slowestQueryTimeMs = 0.0;
+
+    private static string $slowestQuerySql = '';
+
+    /** @var list<array{function: string, call: string, class?: string, file: string, line: int}> */
+    private static array $slowestQueryFrames = [];
+
     /** @var list<float> */
     private static array $cacheGetStartStack = [];
 
@@ -170,6 +193,11 @@ final class PerformanceInstrumentation
         self::$queryTotalDurationMs = 0.0;
         self::$slowQueryCount = 0;
         self::$sqlFingerprintCounts = [];
+        self::$sqlFingerprintSample = [];
+        self::$sqlFingerprintFrames = [];
+        self::$slowestQueryTimeMs = 0.0;
+        self::$slowestQuerySql = '';
+        self::$slowestQueryFrames = [];
         self::$cacheGetStartStack = [];
         self::$cacheWriteStartStack = [];
         self::$cacheForgetStartStack = [];
@@ -1311,6 +1339,25 @@ final class PerformanceInstrumentation
         $fp = SqlFingerprint::normalize($event->sql);
         if ($fp !== '') {
             self::$sqlFingerprintCounts[$fp] = (self::$sqlFingerprintCounts[$fp] ?? 0) + 1;
+
+            if (self::queryInsightsEnabled()) {
+                $timeMs = (float) $event->time;
+                $truncatedSql = strlen($event->sql) > 2000 ? substr($event->sql, 0, 2000) : $event->sql;
+
+                // Capture frames only on the first sight of a fingerprint (bounded to 200 distinct
+                // statements) and for a new slowest query — never on every execution, since
+                // debug_backtrace is comparatively expensive in a hot query loop.
+                if (! isset(self::$sqlFingerprintSample[$fp]) && count(self::$sqlFingerprintSample) < 200) {
+                    self::$sqlFingerprintSample[$fp] = $truncatedSql;
+                    self::$sqlFingerprintFrames[$fp] = self::appBacktrace();
+                }
+
+                if ($timeMs >= self::$slowestQueryTimeMs) {
+                    self::$slowestQueryTimeMs = $timeMs;
+                    self::$slowestQuerySql = $truncatedSql;
+                    self::$slowestQueryFrames = self::appBacktrace();
+                }
+            }
         }
 
         $parent = Tracer::instance()->getCurrentSpan();
@@ -1357,6 +1404,90 @@ final class PerformanceInstrumentation
         return max(0.0, (float) ($perf['slow_query_ms'] ?? 100));
     }
 
+    /**
+     * The fingerprint with the highest execution count this transaction — the statement most likely
+     * responsible for a suspected N+1. Returns null when no statements were recorded.
+     */
+    private static function mostRepeatedFingerprint(): ?string
+    {
+        if (self::$sqlFingerprintCounts === []) {
+            return null;
+        }
+
+        $offendingFp = null;
+        $max = -1;
+        foreach (self::$sqlFingerprintCounts as $fp => $count) {
+            if ($count > $max) {
+                $max = $count;
+                $offendingFp = (string) $fp;
+            }
+        }
+
+        return $offendingFp;
+    }
+
+    /**
+     * Whether the query_insights signal is on. Mirrors the gating used by attachTransactionInsights
+     * (defaults to enabled when unset) so N+1 / slow-query frame capture matches what gets emitted.
+     */
+    private static function queryInsightsEnabled(): bool
+    {
+        $perf = config('lookout-tracing.performance');
+        $insights = is_array($perf) ? ($perf['query_insights'] ?? []) : [];
+
+        return ! is_array($insights) || ($insights['enabled'] ?? true);
+    }
+
+    /**
+     * Capture the current call stack, innermost-first (the query call site first), in the Frame
+     * shape the server's stack renderer expects. Frames inside this SDK and frames without a file
+     * are dropped, and the result is capped at 30 frames. Arguments are never captured.
+     *
+     * @return list<array{function: string, call: string, class?: string, file: string, line: int}>
+     */
+    private static function appBacktrace(): array
+    {
+        $raw = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 60);
+
+        $frames = [];
+        foreach ($raw as $frame) {
+            $file = $frame['file'] ?? null;
+            if ($file === null) {
+                continue;
+            }
+
+            $class = $frame['class'] ?? null;
+            $function = (string) ($frame['function'] ?? '');
+
+            if (is_string($class) && str_starts_with($class, 'Lookout\\Tracing')) {
+                continue;
+            }
+
+            $type = $frame['type'] ?? '';
+            $call = is_string($class) && $class !== ''
+                ? $class.$type.$function
+                : $function;
+
+            $mapped = [
+                'function' => $function,
+                'call' => $call,
+                'file' => (string) $file,
+                'line' => (int) ($frame['line'] ?? 0),
+            ];
+            if (is_string($class) && $class !== '') {
+                $mapped['class'] = $class;
+            }
+
+            $frames[] = $mapped;
+
+            if (count($frames) >= 30) {
+                break;
+            }
+        }
+
+        return $frames;
+    }
+
     public static function onMessageLogged(MessageLogged $event): void
     {
         if (! self::performanceEnabled() || ! self::collector('log')) {
@@ -1399,6 +1530,12 @@ final class PerformanceInstrumentation
             if (self::$slowQueryCount > 0) {
                 $data['db.slow_query_count'] = self::$slowQueryCount;
             }
+            $slowThresholdMs = self::slowQueryThresholdMs();
+            if ($slowThresholdMs > 0 && self::$slowestQuerySql !== '' && self::$slowestQueryTimeMs >= $slowThresholdMs) {
+                $data['db.slow_query'] = self::$slowestQuerySql;
+                $data['db.slow_query_time_ms'] = self::$slowestQueryTimeMs;
+                $data['db.slow_query_frames'] = self::$slowestQueryFrames;
+            }
         }
 
         if ($enabled && self::collector('database') && self::$queryTotalCount > 0) {
@@ -1414,6 +1551,12 @@ final class PerformanceInstrumentation
             $thresholdQueries = max(4, $thresholdQueries);
             if ($maxRepeat >= $thresholdRepeat && self::$queryTotalCount >= $thresholdQueries) {
                 $data['db.suspected_n_plus_one'] = true;
+
+                $offendingFp = self::mostRepeatedFingerprint();
+                if ($offendingFp !== null && isset(self::$sqlFingerprintSample[$offendingFp])) {
+                    $data['db.n_plus_one_query'] = self::$sqlFingerprintSample[$offendingFp];
+                    $data['db.n_plus_one_frames'] = self::$sqlFingerprintFrames[$offendingFp] ?? [];
+                }
             }
         }
 
