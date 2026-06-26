@@ -27,6 +27,15 @@ final class SpanOperation
     /** Raw Redis commands (Predis/phpredis) via Laravel Redis facade */
     public const REDIS_COMMAND = 'db.redis';
 
+    /** Filesystem read (get / readStream) on a Laravel disk */
+    public const FILE_READ = 'file.read';
+
+    /** Filesystem write (put / writeStream / prepend / append / copy / move) on a Laravel disk */
+    public const FILE_WRITE = 'file.write';
+
+    /** Filesystem delete on a Laravel disk */
+    public const FILE_DELETE = 'file.delete';
+
     public const QUEUE_PUBLISH = 'queue.publish';
 
     public const QUEUE_PROCESS = 'queue.process';

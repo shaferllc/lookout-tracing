@@ -12,6 +12,7 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Lookout\Tracing\Auth\Client as AuthIngestClient;
 use Lookout\Tracing\Batch\Client as BatchIngestClient;
 use Lookout\Tracing\Cron\Client as CronClient;
 use Lookout\Tracing\DomainEvent\Client as DomainEventClient;
@@ -78,6 +79,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->configureNotificationClientFromConfig();
         $this->configureModelChangeClientFromConfig();
         $this->configureGateClientFromConfig();
+        $this->configureAuthClientFromConfig();
         $this->configureDomainEventClientFromConfig();
         $this->configureProfileClientFromConfig();
         $this->configureAutoProfilerFromConfig();
@@ -693,6 +695,26 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         ]);
     }
 
+    protected function configureAuthClientFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['auth_ingest_path']) && is_string($cfg['auth_ingest_path']) ? $cfg['auth_ingest_path'] : '/api/ingest/auth';
+        $path = '/'.ltrim(trim($path), '/');
+
+        AuthIngestClient::configure([
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'auth_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $cfg['release'] ?? null,
+        ]);
+    }
+
     protected function configureDomainEventClientFromConfig(): void
     {
         $cfg = config('lookout-tracing');
@@ -838,6 +860,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         NotificationMonitoringInstrumentation::register($events);
         ModelMonitoringInstrumentation::register($events);
         GateMonitoringInstrumentation::register($events);
+        AuthMonitoringInstrumentation::register($events);
         DomainEventMonitoringInstrumentation::register($events);
     }
 
@@ -874,6 +897,8 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             ExtendedBreadcrumbInstrumentation::registerRedisListener();
             PerformanceInstrumentation::registerRedisPerformanceListener();
         });
+
+        FilesystemInstrumentation::register($this->app);
     }
 
     protected function registerExceptionReporting(): void

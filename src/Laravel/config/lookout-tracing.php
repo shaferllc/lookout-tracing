@@ -272,6 +272,37 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Authentication monitoring (POST /api/ingest/auth)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel reports authentication lifecycle events (Login, Logout, Failed, Lockout,
+    | Registered, PasswordReset, Verified) to Lookout. Only the user id and a display label
+    | (email/name) are sent — never credentials or passwords. Opt-in; off by default. Respect project
+    | auth_ingest_enabled on the server (403 when off).
+    |
+    */
+    'auth_monitoring' => [
+        'enabled' => (bool) env('LOOKOUT_AUTH_MONITORING_ENABLED', false),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Filesystem monitoring (file.read / file.write / file.delete spans)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel disks are wrapped so read/write/delete operations surface as child spans
+    | inside performance traces. Laravel filesystems fire no native events, so this replaces resolved
+    | disks app-wide — opt-in, off by default. Only path + disk + byte size are recorded, never file
+    | contents. An empty 'disks' list traces the default disk; otherwise the listed disks are wrapped.
+    |
+    */
+    'filesystem_monitoring' => [
+        'enabled' => (bool) env('LOOKOUT_FILESYSTEM_MONITORING_ENABLED', false),
+        'disks' => [],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Mail monitoring (POST /api/ingest/mail)
     |--------------------------------------------------------------------------
     |
