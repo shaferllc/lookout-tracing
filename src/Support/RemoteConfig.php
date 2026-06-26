@@ -33,6 +33,8 @@ final class RemoteConfig
             'notifications' => 'notification_monitoring.enabled',
             'models' => 'model_monitoring.enabled',
             'gates' => 'gate_monitoring.enabled',
+            'auth' => 'auth_monitoring.enabled',
+            'filesystem' => 'filesystem_monitoring.enabled',
             'metrics' => 'metrics.enabled',
             'dumps' => 'dumps.enabled',
             'rum' => 'rum.enabled',
