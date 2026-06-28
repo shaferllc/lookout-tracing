@@ -2,6 +2,8 @@
 
 PHP library for **Lookout** distributed tracing: compact **traceparent**-style propagation, **W3C baggage**, manual transactions/spans, and optional Laravel integration. Wire formats stay compatible with common PHP tracing clients without naming third-party vendors here.
 
+**Free dashboard:** [Create a free Starter account](https://uselookout.app/register) (no credit card) — one project, thousands of events/month. Copy your project API key from Settings and view grouped errors in the web UI.
+
 ## Install
 
 Requirements: **PHP 8.3+** and **Composer**. You always add the library with Composer; only Laravel gets auto-wiring via a service provider.
