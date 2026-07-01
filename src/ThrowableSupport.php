@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Lookout\Tracing;
 
+use Lookout\Tracing\Support\DataRedactor;
 use Throwable;
 
 /**
@@ -74,7 +75,10 @@ final class ThrowableSupport
             $n++;
         }
 
-        return $out;
+        // Credentials are routinely passed by value (Auth::attempt(['password' => …]),
+        // connection configs, token strings inside option arrays). Redact any keyed
+        // secrets that surfaced in the normalized arguments before they leave the process.
+        return DataRedactor::redact($out);
     }
 
     private static function normalizeTraceValue(mixed $value, int $depth, int $maxDepth): mixed

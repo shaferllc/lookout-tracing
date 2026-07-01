@@ -30,6 +30,7 @@ use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
 use Lookout\Tracing\Profiling\ProfileIngestClient;
 use Lookout\Tracing\Reporting\ErrorReportClient;
+use Lookout\Tracing\Support\DataRedactor;
 use Lookout\Tracing\Support\DeploymentDefaults;
 use Lookout\Tracing\Support\EnvOverrides;
 use Lookout\Tracing\Support\IngestSelfMonitoring;
@@ -45,6 +46,16 @@ final class LookoutTracingServiceProvider extends ServiceProvider
 
         // Configure the dump ingest client early so capture() is enabled before any dumps run.
         $this->configureDumpIngestFromConfig();
+
+        // Decorate the host's exception handler so a gated, on-box debug page can
+        // pre-empt the branded error for authorized viewers. The wrapper delegates
+        // everything unless the page is enabled + the viewer is authorized, so this
+        // is a no-op for apps that never turn it on.
+        $this->app->extend(ExceptionHandlerContract::class, static function (ExceptionHandlerContract $handler): ExceptionHandlerContract {
+            return $handler instanceof LookoutDebugExceptionHandler
+                ? $handler
+                : new LookoutDebugExceptionHandler($handler);
+        });
     }
 
     public function boot(): void
@@ -68,6 +79,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
 
         $this->applyRemoteSignalConfig();
         $this->applyEnvOverrides();
+        $this->configureRedactionFromConfig();
         $this->configureTracerFromConfig();
         $this->configureLogIngestFromConfig();
         $this->configureMetricsIngestFromConfig();
@@ -221,6 +233,20 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         foreach (['web', 'api'] as $group) {
             $router->pushMiddlewareToGroup($group, PerformanceMiddleware::class);
         }
+    }
+
+    protected function configureRedactionFromConfig(): void
+    {
+        $redaction = config('lookout-tracing.reporting.redaction');
+        if (! is_array($redaction)) {
+            return;
+        }
+
+        $keys = is_array($redaction['extra_keys'] ?? null) ? array_values($redaction['extra_keys']) : [];
+        $patterns = is_array($redaction['patterns'] ?? null) ? array_values($redaction['patterns']) : [];
+        $scrubSql = (bool) ($redaction['scrub_sql'] ?? true);
+
+        DataRedactor::configure($keys, $patterns, $scrubSql);
     }
 
     protected function configureTracerFromConfig(): void

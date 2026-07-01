@@ -199,7 +199,8 @@ final class FrameworkInstrumentation
         if ((self::$querySeq % $sample) !== 0) {
             return;
         }
-        $sql = strlen($event->sql) > 500 ? substr($event->sql, 0, 500).'…' : $event->sql;
+        $sql = \Lookout\Tracing\Support\DataRedactor::scrubSql($event->sql);
+        $sql = strlen($sql) > 500 ? substr($sql, 0, 500).'…' : $sql;
         BreadcrumbBuffer::add('query', $sql, 'debug', [
             'connection' => $event->connectionName,
             'time_ms' => $event->time,

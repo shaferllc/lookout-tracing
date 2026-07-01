@@ -442,6 +442,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Debug page ("Lookout's Ignition")
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, genuine server errors on full-page HTML requests render an
+    | interactive, on-box debug page (stack + locally-resolved source + context
+    | + breadcrumbs) INSTEAD of the app's error page — but only for viewers the
+    | host authorizes via Lookout::showDebugPageUsing(). This is independent of
+    | APP_DEBUG: production stays in production mode for everyone else. With no
+    | gate registered it defaults to APP_DEBUG (the normal local experience).
+    |
+    */
+    'debug_page' => [
+        'enabled' => filter_var((string) env('LOOKOUT_DEBUG_PAGE', env('APP_DEBUG', false)), FILTER_VALIDATE_BOOLEAN),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | HTTP 404 reporting
     |--------------------------------------------------------------------------
     |
@@ -593,8 +610,24 @@ return [
         /*
          * Include normalized function arguments on structured stack_frames when PHP provides them.
          * PHP may omit args when zend.exception_ignore_args=1 (default in some builds).
+         *
+         * Note: arguments can carry credentials passed by value (e.g. Auth::attempt(['password' => …]),
+         * DB connect strings). They are run through DataRedactor when included, but for
+         * secret-sensitive apps prefer LOOKOUT_REPORT_STACK_ARGUMENTS=false.
          */
         'include_stack_arguments' => env('LOOKOUT_REPORT_STACK_ARGUMENTS', true),
+
+        /*
+         * Secret redaction policy for breadcrumbs, span data, context, and stack-frame
+         * arguments. `extra_keys` add exact key names; `patterns` add case-insensitive
+         * substrings (matched anywhere in a key — e.g. "secret" catches "client_secret").
+         * `scrub_sql` masks string/long-numeric literals in query breadcrumbs.
+         */
+        'redaction' => [
+            'extra_keys' => array_filter(array_map('trim', explode(',', (string) env('LOOKOUT_REDACT_KEYS', '')))),
+            'patterns' => array_filter(array_map('trim', explode(',', (string) env('LOOKOUT_REDACT_PATTERNS', '')))),
+            'scrub_sql' => (bool) env('LOOKOUT_REDACT_SQL', true),
+        ],
 
         'truncation' => [
             'max_message_length' => (int) env('LOOKOUT_REPORT_MAX_MESSAGE', 131_072),

@@ -229,6 +229,26 @@ final class ErrorReportClient
     }
 
     /**
+     * Build the fully-enriched ingest payload for a throwable WITHOUT sending,
+     * sampling, or suppression checks. This is the render source for the local
+     * debug page: it runs the exact same base builder + middleware pipeline +
+     * truncation the sent payload gets, so what you see is what would be
+     * reported. Works even when reporting is disabled / no DSN is configured
+     * (local dev renders the page with no network dependency).
+     *
+     * @return array<string, mixed>
+     */
+    public function buildPayload(Throwable $e, ?Application $app = null): array
+    {
+        $payload = $this->buildBasePayload($e, $app);
+        foreach ($this->middleware as $mw) {
+            $payload = $mw->handle($payload);
+        }
+
+        return $this->truncator->trim($payload);
+    }
+
+    /**
      * Report a completed HTTP 404 response (handled warning, not an uncaught exception).
      */
     public function reportHttpNotFound(
