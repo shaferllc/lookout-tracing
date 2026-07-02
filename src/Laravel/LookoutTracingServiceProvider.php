@@ -38,6 +38,7 @@ use Lookout\Tracing\Support\EnvOverrides;
 use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Support\MemoryPeakReset;
 use Lookout\Tracing\Support\RemoteConfig;
+use Lookout\Tracing\Support\RequestRouteIgnore;
 use Lookout\Tracing\Tracer;
 
 final class LookoutTracingServiceProvider extends ServiceProvider
@@ -535,6 +536,16 @@ final class LookoutTracingServiceProvider extends ServiceProvider
 
             // Ignored-error suppression keys: the report client drops matching exceptions before send.
             config(['lookout-tracing.reporting.suppressed_keys' => RemoteConfig::suppressedKeys($cached)]);
+
+            // Dashboard-ignored request routes: merged (union) with the local ignore_routes config
+            // so PerformanceMiddleware never starts transactions for either source's patterns.
+            $remoteIgnoredRoutes = RemoteConfig::ignoredRoutes($cached);
+            if ($remoteIgnoredRoutes !== []) {
+                $localIgnoredRoutes = RequestRouteIgnore::normalize(config('lookout-tracing.performance.ignore_routes'));
+                config(['lookout-tracing.performance.ignore_routes' => array_values(array_unique(
+                    array_merge($localIgnoredRoutes, $remoteIgnoredRoutes)
+                ))]);
+            }
 
             // Early refresh: if an ingest response this request reported a newer config_version than
             // the cached one, refresh after the response so the change lands next request (not at TTL).

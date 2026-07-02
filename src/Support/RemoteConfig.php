@@ -136,8 +136,24 @@ final class RemoteConfig
     }
 
     /**
+     * Pure: extract the dashboard's ignored-request-route patterns from a decoded /api/config
+     * document (`ignore_routes`). Matching requests never start an http.server transaction
+     * ({@see RequestRouteIgnore}). Non-string entries are skipped so a malformed payload is safe.
+     *
+     * @param  array<string, mixed>  $remote
+     * @return list<string>
+     */
+    public static function ignoredRoutes(array $remote): array
+    {
+        $raw = $remote['ignore_routes'] ?? null;
+
+        return is_array($raw) ? RequestRouteIgnore::normalize($raw) : [];
+    }
+
+    /**
      * GET {baseUri}/api/config authenticated with the project API key. Returns the decoded
-     * document (`version`, `ttl`, `signals`, `suppress`) or null on any network/parse failure.
+     * document (`version`, `ttl`, `signals`, `suppress`, `ignore_routes`) or null on any
+     * network/parse failure.
      *
      * @return array<string, mixed>|null
      */

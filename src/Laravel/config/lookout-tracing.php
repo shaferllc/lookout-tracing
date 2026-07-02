@@ -792,6 +792,16 @@ return [
         ],
 
         /*
+         * Incoming requests whose route matches any pattern here never start an http.server
+         * transaction. Patterns match the route name, route URI, or request path
+         * (case-insensitive, `*` wildcards): 'horizon.*', '/health*', 'api/status'.
+         * Env form is comma-separated: LOOKOUT_PERFORMANCE_IGNORE_ROUTES="horizon.*,/up".
+         * The dashboard's ignored-request-routes (remote config `ignore_routes`) are merged
+         * in at boot, so routes can also be ignored from the Lookout UI without a deploy.
+         */
+        'ignore_routes' => env('LOOKOUT_PERFORMANCE_IGNORE_ROUTES', []),
+
+        /*
          * View collector (collectors.view): records one zero-duration view.render span per
          * composing view. High volume — capped per request, and namespaced vendor views
          * (containing "::") are skipped. Add substrings to view_deny to exclude more by name.

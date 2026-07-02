@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Support\IngestSelfMonitoring;
 use Lookout\Tracing\Support\MemoryPeakReset;
+use Lookout\Tracing\Support\RequestRouteIgnore;
 use Lookout\Tracing\Tracer;
 use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 
@@ -35,6 +36,9 @@ final class PerformanceMiddleware
         if (empty($collectors['http_server'])) {
             return $next($request);
         }
+        if (self::routeIsIgnored($request, $perf['ignore_routes'] ?? [])) {
+            return $next($request);
+        }
 
         $name = self::transactionName($request);
         PerformanceInstrumentation::resetHttpRequestCounters();
@@ -43,6 +47,30 @@ final class PerformanceMiddleware
         AutoProfiler::maybeStart();
 
         return $next($request);
+    }
+
+    /**
+     * True when performance.ignore_routes (local config merged with the dashboard's
+     * ignored-request-routes) matches this request's route name, route URI, or path.
+     */
+    private static function routeIsIgnored(Request $request, mixed $patterns): bool
+    {
+        $patterns = RequestRouteIgnore::normalize($patterns);
+        if ($patterns === []) {
+            return false;
+        }
+
+        $route = $request->route();
+        $routeName = null;
+        $routeUri = null;
+        if ($route !== null) {
+            $n = $route->getName();
+            $routeName = is_string($n) ? $n : null;
+            $uri = $route->uri();
+            $routeUri = is_string($uri) ? $uri : null;
+        }
+
+        return RequestRouteIgnore::matches($patterns, $routeName, $routeUri, $request->path());
     }
 
     private static function transactionName(Request $request): string
