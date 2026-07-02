@@ -581,6 +581,12 @@ return [
         'send_immediately' => env('LOOKOUT_REPORT_SEND_IMMEDIATELY', true),
 
         /*
+         * When true with queue enabled, Laravel flushes buffered errors on $app->terminating()
+         * instead of PHP shutdown.
+         */
+        'flush_on_terminate' => (bool) env('LOOKOUT_REPORT_FLUSH_ON_TERMINATE', false),
+
+        /*
          * Random client-side drop rate for uncaught reports (0.0–1.0). 1.0 = keep all.
          */
         'sample_rate' => (float) env('LOOKOUT_REPORT_SAMPLE_RATE', 1.0),

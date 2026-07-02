@@ -110,7 +110,10 @@ final class ErrorReportClient
         }
 
         if ($this->queueEnabled && ! $this->sendImmediately && ! $this->disabled) {
-            $this->queue->registerShutdownFlush(fn () => $this->flush());
+            $flushOnTerminate = (bool) ($rep['flush_on_terminate'] ?? false);
+            if (! $flushOnTerminate) {
+                $this->queue->registerShutdownFlush(fn () => $this->flush());
+            }
         }
     }
 

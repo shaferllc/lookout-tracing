@@ -106,6 +106,23 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->registerExceptionReporting();
         $this->registerHttpNotFoundReporting();
 
+        $reportCfg = config('lookout-tracing.reporting');
+        if (is_array($reportCfg)
+            && ! empty($reportCfg['queue'])
+            && empty($reportCfg['send_immediately'])
+            && ! empty($reportCfg['flush_on_terminate'])
+            && empty($reportCfg['disabled'])
+            && ! config('lookout-tracing.disabled', false)) {
+            /** @var Application $app */
+            $app = $this->app;
+            $app->terminating(static function (): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
+                ErrorReportClient::instance()->flush();
+            });
+        }
+
         if (config('lookout-tracing.auto_flush', false)) {
             /** @var Application $app */
             $app = $this->app;
