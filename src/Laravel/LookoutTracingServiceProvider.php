@@ -9,6 +9,7 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Foundation\Exceptions\Handler as FoundationExceptionHandler;
 use Illuminate\Routing\Router;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
@@ -30,6 +31,7 @@ use Lookout\Tracing\Profiling\AutoProfiler;
 use Lookout\Tracing\Profiling\ProfileClient;
 use Lookout\Tracing\Profiling\ProfileIngestClient;
 use Lookout\Tracing\Reporting\ErrorReportClient;
+use Lookout\Tracing\Security\SecurityAuditReporter;
 use Lookout\Tracing\Support\DataRedactor;
 use Lookout\Tracing\Support\DeploymentDefaults;
 use Lookout\Tracing\Support\EnvOverrides;
@@ -95,6 +97,7 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         $this->configureDomainEventClientFromConfig();
         $this->configureProfileClientFromConfig();
         $this->configureAutoProfilerFromConfig();
+        $this->configureSecurityAuditFromConfig();
         $this->configureErrorReportClient();
 
         $this->applyComprehensiveCollectionConfiguration();
@@ -214,6 +217,36 @@ final class LookoutTracingServiceProvider extends ServiceProvider
                     return;
                 }
                 GateClient::instance()->flush();
+            });
+        }
+
+        $securityCfg = config('lookout-tracing.security_audit');
+        if (is_array($securityCfg) && ! empty($securityCfg['enabled'])) {
+            /** @var Application $app */
+            $app = $this->app;
+            $intervalMinutes = max(5, (int) ($securityCfg['interval_minutes'] ?? 60));
+            $basePath = $app->basePath();
+            $app->terminating(static function () use ($intervalMinutes, $basePath): void {
+                if (IngestSelfMonitoring::shouldSkipTerminateFlushes()) {
+                    return;
+                }
+                // Throttle to at most one snapshot per interval across the fleet via the shared
+                // cache; add()'s atomicity means only the first worker past the window sends.
+                if (! SecurityAuditReporter::isEnabled()) {
+                    return;
+                }
+                try {
+                    $lock = Cache::add(
+                        'lookout-tracing:security-audit:sent',
+                        1,
+                        $intervalMinutes * 60,
+                    );
+                } catch (\Throwable) {
+                    return;
+                }
+                if ($lock === true) {
+                    SecurityAuditReporter::send($basePath);
+                }
             });
         }
 
@@ -406,6 +439,29 @@ final class LookoutTracingServiceProvider extends ServiceProvider
             'max_batch' => (int) ($dumps['max_batch'] ?? 20),
             'max_per_request' => (int) ($dumps['max_per_request'] ?? 100),
             'serializer' => $serializer,
+        ]);
+    }
+
+    protected function configureSecurityAuditFromConfig(): void
+    {
+        $cfg = config('lookout-tracing');
+        if (! is_array($cfg)) {
+            return;
+        }
+
+        $security = is_array($cfg['security_audit'] ?? null) ? $cfg['security_audit'] : [];
+        $base = isset($cfg['base_uri']) && is_string($cfg['base_uri']) ? rtrim($cfg['base_uri'], '/') : '';
+        $path = isset($cfg['security_ingest_path']) && is_string($cfg['security_ingest_path']) ? $cfg['security_ingest_path'] : '/api/ingest/security';
+        $path = '/'.ltrim(trim($path), '/');
+        $releaseCfg = isset($cfg['release']) && is_string($cfg['release']) ? trim($cfg['release']) : '';
+
+        SecurityAuditReporter::configure([
+            'enabled' => (bool) ($security['enabled'] ?? false),
+            'api_key' => $cfg['api_key'] ?? null,
+            'base_uri' => $base !== '' ? $base : null,
+            'security_ingest_path' => $path,
+            'environment' => $cfg['environment'] ?? null,
+            'release' => $releaseCfg !== '' ? $releaseCfg : null,
         ]);
     }
 

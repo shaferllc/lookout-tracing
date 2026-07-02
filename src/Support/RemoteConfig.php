@@ -39,6 +39,7 @@ final class RemoteConfig
             'dumps' => 'dumps.enabled',
             'rum' => 'rum.enabled',
             'crons' => 'cron_monitoring.enabled',
+            'security_audit' => 'security_audit.enabled',
         ];
     }
 

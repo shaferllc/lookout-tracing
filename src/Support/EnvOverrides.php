@@ -30,6 +30,7 @@ final class EnvOverrides
         'dumps' => 'LOOKOUT_DUMPS_ENABLED',
         'rum' => 'LOOKOUT_RUM_ENABLED',
         'crons' => 'LOOKOUT_CRON_MONITORING_ENABLED',
+        'security_audit' => 'LOOKOUT_SECURITY_AUDIT_ENABLED',
     ];
 
     /** Signal type => its sample-rate env var (only signals that sample client-side). */
@@ -62,6 +63,7 @@ final class EnvOverrides
         'dumps' => 'dump_ingest_path',
         'rum' => 'rum_ingest_path',
         'crons' => 'cron_ingest_path',
+        'security_audit' => 'security_ingest_path',
     ];
 
     /**

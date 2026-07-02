@@ -208,6 +208,26 @@ return [
         ],
     ],
 
+    'security_ingest_path' => env('LOOKOUT_SECURITY_INGEST_PATH', '/api/ingest/security'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Security posture audit
+    |--------------------------------------------------------------------------
+    |
+    | When enabled (opt-in), the SDK periodically (at most once per interval, throttled via the
+    | cache) reports a security-posture snapshot to POST /api/ingest/security: integrity hashes of
+    | a few high-signal files (.env, composer.lock, public/index.php, artisan), non-secret config
+    | flags (APP_DEBUG, session/cookie security, app URL scheme), files exposed in the public web
+    | root, and a dependency count. No secret values are read — only digests and flags. The Lookout
+    | server diffs each snapshot against the previous one to detect tampering and misconfiguration.
+    |
+    */
+    'security_audit' => [
+        'enabled' => env('LOOKOUT_SECURITY_AUDIT_ENABLED', false),
+        'interval_minutes' => (int) env('LOOKOUT_SECURITY_AUDIT_INTERVAL_MINUTES', 60),
+    ],
+
     'rum_ingest_path' => env('LOOKOUT_RUM_INGEST_PATH', '/api/ingest/rum'),
 
     /*
