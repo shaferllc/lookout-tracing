@@ -77,8 +77,10 @@ final class PerformanceMiddleware
     {
         $route = $request->route();
         if ($route !== null) {
+            // Skip the synthetic `generated::<hash>` names route:cache assigns to unnamed
+            // routes — the URI is the meaningful identity for those.
             $n = $route->getName();
-            if (is_string($n) && $n !== '') {
+            if (is_string($n) && $n !== '' && ! str_starts_with($n, 'generated::')) {
                 return $request->getMethod().' '.$n;
             }
             $uri = $route->uri();
