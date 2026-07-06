@@ -475,6 +475,29 @@ return [
     */
     'debug_page' => [
         'enabled' => filter_var((string) env('LOOKOUT_DEBUG_PAGE', env('APP_DEBUG', false)), FILTER_VALIDATE_BOOLEAN),
+
+        /*
+        | Editor used for "open file:line" deep links on stack frames. One of:
+        | vscode, vscode-insiders, cursor, windsurf, phpstorm, idea, sublime,
+        | zed, textmate, nova, emacs, macvim. Empty disables the links.
+        */
+        'editor' => env('LOOKOUT_DEBUG_PAGE_EDITOR', 'vscode'),
+
+        /*
+        | Path mapping for Sail/Docker: when the app runs in a container the
+        | recorded file paths (remote_sites_path, e.g. /var/www/html) are
+        | rewritten to the host checkout (local_sites_path) before building
+        | editor links.
+        */
+        'remote_sites_path' => env('LOOKOUT_REMOTE_SITES_PATH', ''),
+        'local_sites_path' => env('LOOKOUT_LOCAL_SITES_PATH', ''),
+
+        /*
+        | "Seen N times before" banner: a single short-timeout (~0.5s), fail-open
+        | GET to the Lookout dashboard at render time. The only network call the
+        | debug page makes; set false to render fully offline.
+        */
+        'remote_stats' => filter_var((string) env('LOOKOUT_DEBUG_PAGE_REMOTE_STATS', true), FILTER_VALIDATE_BOOLEAN),
     ],
 
     /*

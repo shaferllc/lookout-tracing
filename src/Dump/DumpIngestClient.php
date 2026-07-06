@@ -119,6 +119,18 @@ final class DumpIngestClient
     }
 
     /**
+     * Dumps captured during this request that have not been flushed yet — read
+     * by the local debug page so dumps that happened before a crash are shown
+     * on the error page itself.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function bufferedDumps(): array
+    {
+        return $this->buffer;
+    }
+
+    /**
      * POST buffered dumps (chunks of up to max_batch). Clears the buffer on completion.
      */
     public function flush(): bool

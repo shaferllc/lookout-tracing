@@ -758,6 +758,18 @@ final class Tracer
     }
 
     /**
+     * Finished span records for the current trace (op, description, start/end
+     * timestamps, status). Read by the local debug page to render a request
+     * timeline; in-flight spans (including the root) are not included.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function finishedSpanRecords(): array
+    {
+        return $this->finishedRecords;
+    }
+
+    /**
      * Optional error-ingest fields to split fingerprints for slow / DB-heavy requests ({@see grouping_slow_path} on the API).
      *
      * @return array<string, mixed>

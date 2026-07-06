@@ -9,8 +9,11 @@ use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Lookout\Tracing\Debug\RequestDetailsCollector;
+use Lookout\Tracing\Debug\RouteSuggestions;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 /**
@@ -59,7 +62,10 @@ final class LookoutDebugExceptionHandler implements ExceptionHandler
                 $html = Lookout::debugPageRenderer()->renderThrowable(
                     $e,
                     app(),
-                    Lookout::resolveDebugPageMeta($request, $e) + ['privileged' => true],
+                    Lookout::resolveDebugPageMeta($request, $e) + [
+                        'privileged' => true,
+                        'request_details' => (new RequestDetailsCollector)->collect($request),
+                    ],
                 );
 
                 return new Response($html, 500, ['Content-Type' => 'text/html; charset=UTF-8']);
@@ -69,7 +75,51 @@ final class LookoutDebugExceptionHandler implements ExceptionHandler
             }
         }
 
+        if ($this->shouldRenderNotFoundPage($request, $e)) {
+            try {
+                return new Response(
+                    $this->renderNotFoundPage($request),
+                    404,
+                    ['Content-Type' => 'text/html; charset=UTF-8'],
+                );
+            } catch (Throwable) {
+                // fall through to the host's normal 404
+            }
+        }
+
         return $this->inner->render($request, $e);
+    }
+
+    /**
+     * Smart 404 with "did you mean" route suggestions — dev tooling, so it
+     * additionally requires the debug-page gate and never fires in test runs
+     * (suites assert on the host app's own 404 rendering).
+     */
+    private function shouldRenderNotFoundPage(mixed $request, Throwable $e): bool
+    {
+        if (! $e instanceof NotFoundHttpException || ! Lookout::debugPageEnabled()) {
+            return false;
+        }
+        if (! $request instanceof Request || app()->runningUnitTests()) {
+            return false;
+        }
+        if ($request->expectsJson() || $request->isJson() || $request->hasHeader('X-Livewire')) {
+            return false;
+        }
+
+        return Lookout::viewerMaySeeDebugPage($request, $e);
+    }
+
+    private function renderNotFoundPage(Request $request): string
+    {
+        $path = '/'.ltrim($request->path(), '/');
+
+        return view('lookout-tracing::debug.not-found', [
+            'path' => $path,
+            'method' => $request->getMethod(),
+            'suggestions' => RouteSuggestions::rank($path, RouteSuggestions::registeredGetUris()),
+            'appName' => config('app.name', 'App'),
+        ])->render();
     }
 
     public function renderForConsole($output, Throwable $e): void
@@ -109,11 +159,15 @@ final class LookoutDebugExceptionHandler implements ExceptionHandler
 
     private function wantsHtmlPage(Request $request): bool
     {
-        if ($request->expectsJson() || $request->isJson()) {
-            return false;
-        }
-        // Livewire updates are XHR and can't display a full HTML page — out of scope for v1.
+        // Livewire updates get the full debug HTML as the 500 body: the SDK's
+        // overlay script (injected on parent pages) catches the failed update
+        // and displays it in a modal. Checked before the JSON sniffs because
+        // Livewire posts application/json. Skipped in test runs so Livewire
+        // suites keep asserting the host app's own error behavior.
         if ($request->hasHeader('X-Livewire')) {
+            return ! app()->runningUnitTests();
+        }
+        if ($request->expectsJson() || $request->isJson()) {
             return false;
         }
 

@@ -16,6 +16,8 @@ use Illuminate\Support\ServiceProvider;
 use Lookout\Tracing\Auth\Client as AuthIngestClient;
 use Lookout\Tracing\Batch\Client as BatchIngestClient;
 use Lookout\Tracing\Cron\Client as CronClient;
+use Lookout\Tracing\Debug\LocalErrorStore;
+use Lookout\Tracing\Debug\RunnableSolutions;
 use Lookout\Tracing\DomainEvent\Client as DomainEventClient;
 use Lookout\Tracing\Dump\DumpIngestClient;
 use Lookout\Tracing\Gate\Client as GateClient;
@@ -253,6 +255,69 @@ final class LookoutTracingServiceProvider extends ServiceProvider
 
         $this->registerPerformanceMiddlewareGroups($router);
         $this->registerRumAssetRoute();
+        $this->registerDebugPageRoutes($router);
+    }
+
+    /**
+     * Dev-tooling routes for the debug page: the Livewire overlay script, the
+     * local error history, and the runnable-solutions action endpoint. Only
+     * registered when the debug page is enabled; history/actions additionally
+     * require APP_DEBUG (and actions re-verify local env + an APP_KEY HMAC).
+     */
+    protected function registerDebugPageRoutes(Router $router): void
+    {
+        if ($this->app->routesAreCached() || ! Lookout::debugPageEnabled()) {
+            return;
+        }
+
+        Route::get('/_lookout/overlay.js', static function () {
+            $path = dirname(__DIR__, 2).'/resources/js/debug-overlay.js';
+            if (! is_file($path)) {
+                abort(404);
+            }
+
+            return response()->file($path, [
+                'Content-Type' => 'application/javascript; charset=UTF-8',
+                'Cache-Control' => 'no-store',
+            ]);
+        })->name('lookout.debug.overlay');
+
+        if (! $this->app->runningUnitTests()) {
+            $router->pushMiddlewareToGroup('web', DebugOverlayScriptMiddleware::class);
+        }
+
+        if (! (bool) config('app.debug', false)) {
+            return;
+        }
+
+        Route::get('/_lookout/errors', static function () {
+            return response()->view('lookout-tracing::debug.history', [
+                'entries' => (new LocalErrorStore)->list(),
+                'appName' => config('app.name', 'App'),
+            ]);
+        })->name('lookout.debug.history');
+
+        Route::get('/_lookout/errors/{id}', static function (string $id) {
+            $stored = (new LocalErrorStore)->get($id);
+            if ($stored === null) {
+                abort(404);
+            }
+
+            $html = Lookout::debugPageRenderer()->renderPayload($stored['payload'], [
+                'privileged' => true,
+                'request_details' => $stored['request_details'],
+            ]);
+
+            return response($html, 200, ['Content-Type' => 'text/html; charset=UTF-8']);
+        })->where('id', '[a-zA-Z0-9\-]{1,64}')->name('lookout.debug.history.show');
+
+        Route::post('/_lookout/actions', static function () {
+            $actionId = (string) request()->input('action', '');
+            $token = (string) request()->input('token', '');
+            [$ok, $output] = RunnableSolutions::run($actionId, $token);
+
+            return response()->json(['ok' => $ok, 'output' => $output], $ok ? 200 : 422);
+        })->name('lookout.debug.action');
     }
 
     protected function registerRumAssetRoute(): void
