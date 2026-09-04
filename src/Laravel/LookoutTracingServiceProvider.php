@@ -56,10 +56,20 @@ final class LookoutTracingServiceProvider extends ServiceProvider
         // pre-empt the branded error for authorized viewers. The wrapper delegates
         // everything unless the page is enabled + the viewer is authorized, so this
         // is a no-op for apps that never turn it on.
-        $this->app->extend(ExceptionHandlerContract::class, static function (ExceptionHandlerContract $handler): ExceptionHandlerContract {
-            return $handler instanceof LookoutDebugExceptionHandler
-                ? $handler
-                : new LookoutDebugExceptionHandler($handler);
+        //
+        // Deliberately NOT via $app->extend(). The container fires resolving
+        // callbacks against the FINAL extended object, and both Laravel's own
+        // withExceptions() configuration and this package's reportable() hook are
+        // registered with afterResolving() on the CONCRETE Foundation handler.
+        // Wrapping during resolution makes that instanceof check fail, silently
+        // discarding every renderable() and report() closure the host app declared
+        // in bootstrap/app.php. So: resolve the real handler first, then wrap it.
+        $this->app->booted(static function (Application $app): void {
+            $handler = $app->make(ExceptionHandlerContract::class);
+
+            if (! $handler instanceof LookoutDebugExceptionHandler) {
+                $app->instance(ExceptionHandlerContract::class, new LookoutDebugExceptionHandler($handler));
+            }
         });
     }
 
