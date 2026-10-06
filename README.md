@@ -60,7 +60,7 @@ Tracer::instance()->configure([
 
 Use **`Tracer`**, **`Tracing`**, **`lookout_logger()`**, **`lookout_metrics()`**, PSR-15 middleware (e.g. `ContinueTracePsr15Middleware`), and **`GuzzleTraceMiddleware`** as needed; see **Propagation**, **Custom instrumentation**, **Lookout ingest**, and **Guzzle 7** below. For Slim / Mezzio, see the `slim/slim` suggestion in `composer.json`.
 
-(This monorepo vendors the package from `packages/lookout-tracing` via a Composer path repository when developing Lookout itself.)
+(This monorepo keeps the package source at `packages/lookout-tracing`. The Lookout app installs the published `lookout/tracing` package from Packagist so container deploys do not depend on a local path repository.)
 
 ## Propagation
 
